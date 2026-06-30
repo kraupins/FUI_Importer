@@ -18,12 +18,6 @@ namespace AiMultiToolKit.FuiImporter
     {
         private string _fuiPath = string.Empty;
         private string _outputRoot = "Assets/FUI_Imported";
-        private bool _overwriteExisting = true;
-        private bool _createPackageSubfolder = true;
-        private bool _importTexturesForUiToolkit = true;
-        private bool _createPanelSettings = true;
-        private bool _createScreenPrefabs = true;
-        private bool _addScreensToOpenScene = true;
         private Vector2 _scroll;
         private FuiImportReport _lastReport;
         private string _lastError = string.Empty;
@@ -74,7 +68,7 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.Space(6);
             EditorGUILayout.LabelField("AI Multi-Tool Kit · FUI → Unity UI Toolkit", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "Импортирует .fui из Figma-плагина, раскладывает ассеты и автоматически создаёт UXML/USS, текстуры, шрифты, PanelSettings и UIDocument-префабы. " +
+                "Импортирует .fui из Figma-плагина и автоматически создаёт готовый Unity UI Toolkit проект: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, UIDocument-префабы и Unity-сцены. " +
                 "После импорта этот пакет можно удалить: созданный UI остаётся на стандартном Unity UI Toolkit.",
                 MessageType.Info);
 
@@ -93,12 +87,9 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.Space(8);
             EditorGUILayout.LabelField("Куда импортировать", EditorStyles.boldLabel);
             _outputRoot = EditorGUILayout.TextField("Папка вывода", _outputRoot);
-            _createPackageSubfolder = EditorGUILayout.ToggleLeft("Создать подпапку по названию проекта", _createPackageSubfolder);
-            _overwriteExisting = EditorGUILayout.ToggleLeft("Перезаписывать существующие файлы", _overwriteExisting);
-            _importTexturesForUiToolkit = EditorGUILayout.ToggleLeft("Применить настройки текстур для UI Toolkit", _importTexturesForUiToolkit);
-            _createPanelSettings = EditorGUILayout.ToggleLeft("Создать PanelSettings", _createPanelSettings);
-            _createScreenPrefabs = EditorGUILayout.ToggleLeft("Создать готовые префабы UIDocument", _createScreenPrefabs);
-            _addScreensToOpenScene = EditorGUILayout.ToggleLeft("Добавить экраны в открытую сцену", _addScreensToOpenScene);
+            EditorGUILayout.HelpBox(
+                "Все этапы включены автоматически: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, UIDocument-префабы, Unity-сцены и объект предпросмотра в открытой сцене.",
+                MessageType.None);
 
             EditorGUILayout.Space(10);
             using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(_fuiPath)))
@@ -142,6 +133,7 @@ namespace AiMultiToolKit.FuiImporter
                 "Fonts/* — шрифты из .fui, если они были упакованы\n" +
                 "PanelSettings/* — настройки панели UI Toolkit\n" +
                 "Prefabs/* — готовые UIDocument-префабы\n" +
+                "Scenes/* — готовая сцена со всеми экранами и отдельная сцена на каждый экран\n" +
                 "Source/* — исходные JSON для проверки и отладки",
                 MessageType.None);
 
@@ -158,12 +150,14 @@ namespace AiMultiToolKit.FuiImporter
                 var options = new FuiImportOptions
                 {
                     OutputRootAssetPath = _outputRoot,
-                    OverwriteExisting = _overwriteExisting,
-                    CreatePackageSubfolder = _createPackageSubfolder,
-                    ApplyTextureSettings = _importTexturesForUiToolkit,
-                    CreatePanelSettings = _createPanelSettings,
-                    CreateScreenPrefabs = _createScreenPrefabs,
-                    AddScreensToOpenScene = _addScreensToOpenScene
+                    OverwriteExisting = true,
+                    CreatePackageSubfolder = true,
+                    ApplyTextureSettings = true,
+                    CreatePanelSettings = true,
+                    CreateScreenPrefabs = true,
+                    CreateSceneAssets = true,
+                    AddScreensToOpenScene = true,
+                    OpenFirstUxmlAfterImport = true
                 };
 
                 _lastReport = AiFuiImporter.Import(_fuiPath, options);
@@ -187,7 +181,9 @@ namespace AiMultiToolKit.FuiImporter
         public bool ApplyTextureSettings = true;
         public bool CreatePanelSettings = true;
         public bool CreateScreenPrefabs = true;
+        public bool CreateSceneAssets = true;
         public bool AddScreensToOpenScene = true;
+        public bool OpenFirstUxmlAfterImport = true;
     }
 
     public sealed class FuiImportReport
@@ -197,6 +193,7 @@ namespace AiMultiToolKit.FuiImporter
         public readonly List<string> GeneratedUxml = new List<string>();
         public readonly List<string> GeneratedUss = new List<string>();
         public readonly List<string> GeneratedPrefabs = new List<string>();
+        public readonly List<string> GeneratedScenes = new List<string>();
         public string PanelSettingsAssetPath;
         public string SceneRootObjectName;
         public int CopiedTextureCount;
@@ -214,6 +211,7 @@ namespace AiMultiToolKit.FuiImporter
             sb.AppendLine("UXML: " + GeneratedUxml.Count);
             sb.AppendLine("USS: " + GeneratedUss.Count);
             sb.AppendLine("Префабы: " + GeneratedPrefabs.Count);
+            sb.AppendLine("Сцены: " + GeneratedScenes.Count);
             if (!string.IsNullOrEmpty(PanelSettingsAssetPath)) sb.AppendLine("PanelSettings: " + PanelSettingsAssetPath);
             if (!string.IsNullOrEmpty(SceneRootObjectName)) sb.AppendLine("Объект в сцене: " + SceneRootObjectName);
             sb.AppendLine("Текстуры: " + CopiedTextureCount);
@@ -331,7 +329,7 @@ namespace AiMultiToolKit.FuiImporter
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
 
             PanelSettings panelSettings = null;
-            if (options.CreatePanelSettings || options.CreateScreenPrefabs || options.AddScreensToOpenScene)
+            if (options.CreatePanelSettings || options.CreateScreenPrefabs || options.CreateSceneAssets || options.AddScreensToOpenScene)
             {
                 panelSettings = CreatePanelSettingsAsset(outputRoot, projectName, generatedScreens, report);
             }
@@ -341,6 +339,11 @@ namespace AiMultiToolKit.FuiImporter
                 CreateScreenPrefabs(outputRoot, generatedScreens, panelSettings, report);
             }
 
+            if (options.CreateSceneAssets)
+            {
+                CreateSceneAssets(outputRoot, projectName, generatedScreens, panelSettings, report);
+            }
+
             if (options.AddScreensToOpenScene)
             {
                 CreateSceneObjects(projectName, generatedScreens, panelSettings, report);
@@ -348,6 +351,12 @@ namespace AiMultiToolKit.FuiImporter
 
             WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(outputRoot, "fui-import-report.json"), BuildReportJson(report));
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+
+            if (options.OpenFirstUxmlAfterImport && report.GeneratedUxml.Count > 0)
+            {
+                var firstUxml = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(report.GeneratedUxml[0]);
+                if (firstUxml != null) EditorApplication.delayCall += () => AssetDatabase.OpenAsset(firstUxml);
+            }
 
             return report;
         }
@@ -481,6 +490,109 @@ namespace AiMultiToolKit.FuiImporter
             }
         }
 
+
+
+        private static void CreateSceneAssets(string outputRoot, string projectName, List<FuiGeneratedScreenAsset> screens, PanelSettings panelSettings, FuiImportReport report)
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                AddReportWarning(report, "Сцены не созданы, потому что Unity переходит в Play Mode.");
+                return;
+            }
+            if (screens == null || screens.Count == 0) return;
+
+            var folder = AiFuiImporterUtility.CombineAssetPath(outputRoot, "Scenes");
+            AiFuiImporterUtility.EnsureAssetFolder(folder);
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+
+            var safeProject = AiFuiImporterUtility.SanitizeFileName(projectName, "FUI_Project");
+            var allScreensPath = AiFuiImporterUtility.CombineAssetPath(folder, safeProject + "_AllScreens.unity");
+            CreateAllScreensScene(allScreensPath, projectName, screens, panelSettings, report);
+
+            foreach (var screen in screens)
+            {
+                if (screen == null) continue;
+                var scenePath = AiFuiImporterUtility.CombineAssetPath(folder, screen.Name + ".unity");
+                CreateSingleScreenScene(scenePath, screen, panelSettings, report);
+            }
+        }
+
+        private static void CreateAllScreensScene(string sceneAssetPath, string projectName, List<FuiGeneratedScreenAsset> screens, PanelSettings panelSettings, FuiImportReport report)
+        {
+            Scene scene = default(Scene);
+            try
+            {
+                scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+                scene.name = Path.GetFileNameWithoutExtension(sceneAssetPath);
+
+                var rootName = "FUI_" + AiFuiImporterUtility.SanitizeIdentifier(projectName, "Imported") + "_Screens";
+                var root = new GameObject(rootName);
+                SceneManager.MoveGameObjectToScene(root, scene);
+
+                for (var i = 0; i < screens.Count; i++)
+                {
+                    var go = CreateUidocumentObject(screens[i], panelSettings, i, i == 0, report);
+                    if (go == null) continue;
+                    SceneManager.MoveGameObjectToScene(go, scene);
+                    go.transform.SetParent(root.transform, false);
+                }
+
+                EditorSceneManager.SaveScene(scene, sceneAssetPath);
+                if (report != null) report.GeneratedScenes.Add(sceneAssetPath);
+            }
+            catch (Exception ex)
+            {
+                AddReportWarning(report, "Не удалось создать общую сцену " + sceneAssetPath + ": " + ex.Message);
+            }
+            finally
+            {
+                if (scene.IsValid() && scene.isLoaded) EditorSceneManager.CloseScene(scene, true);
+            }
+        }
+
+        private static void CreateSingleScreenScene(string sceneAssetPath, FuiGeneratedScreenAsset screen, PanelSettings panelSettings, FuiImportReport report)
+        {
+            Scene scene = default(Scene);
+            try
+            {
+                scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+                scene.name = Path.GetFileNameWithoutExtension(sceneAssetPath);
+
+                var go = CreateUidocumentObject(screen, panelSettings, 0, true, report);
+                if (go != null) SceneManager.MoveGameObjectToScene(go, scene);
+
+                EditorSceneManager.SaveScene(scene, sceneAssetPath);
+                if (report != null) report.GeneratedScenes.Add(sceneAssetPath);
+            }
+            catch (Exception ex)
+            {
+                AddReportWarning(report, "Не удалось создать сцену " + sceneAssetPath + ": " + ex.Message);
+            }
+            finally
+            {
+                if (scene.IsValid() && scene.isLoaded) EditorSceneManager.CloseScene(scene, true);
+            }
+        }
+
+        private static GameObject CreateUidocumentObject(FuiGeneratedScreenAsset screen, PanelSettings panelSettings, int sortingOrder, bool active, FuiImportReport report)
+        {
+            if (screen == null) return null;
+            var visualTree = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(screen.UxmlPath);
+            if (visualTree == null)
+            {
+                AddReportWarning(report, "Не удалось создать UIDocument. Не найден UXML: " + screen.UxmlPath);
+                return null;
+            }
+
+            var go = new GameObject(screen.Name);
+            var doc = go.AddComponent<UIDocument>();
+            doc.panelSettings = panelSettings;
+            doc.visualTreeAsset = visualTree;
+            doc.sortingOrder = sortingOrder;
+            go.SetActive(active);
+            return go;
+        }
+
         private static void CreateSceneObjects(string projectName, List<FuiGeneratedScreenAsset> screens, PanelSettings panelSettings, FuiImportReport report)
         {
             if (EditorApplication.isPlayingOrWillChangePlaymode)
@@ -498,20 +610,9 @@ namespace AiMultiToolKit.FuiImporter
             var index = 0;
             foreach (var screen in screens)
             {
-                var visualTree = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(screen.UxmlPath);
-                if (visualTree == null)
-                {
-                    AddReportWarning(report, "Не удалось создать UIDocument в сцене. Не найден UXML: " + screen.UxmlPath);
-                    continue;
-                }
-
-                var go = new GameObject(screen.Name);
+                var go = CreateUidocumentObject(screen, panelSettings, index, index == 0, report);
+                if (go == null) continue;
                 go.transform.SetParent(root.transform, false);
-                var doc = go.AddComponent<UIDocument>();
-                doc.panelSettings = panelSettings;
-                doc.visualTreeAsset = visualTree;
-                doc.sortingOrder = index;
-                go.SetActive(index == 0);
                 index++;
             }
 
@@ -541,6 +642,7 @@ namespace AiMultiToolKit.FuiImporter
             dict["uxml"] = report.GeneratedUxml;
             dict["uss"] = report.GeneratedUss;
             dict["prefabs"] = report.GeneratedPrefabs;
+            dict["scenes"] = report.GeneratedScenes;
             dict["panelSettings"] = report.PanelSettingsAssetPath;
             dict["sceneRoot"] = report.SceneRootObjectName;
             return FuiJson.Serialize(dict);
@@ -896,7 +998,7 @@ namespace AiMultiToolKit.FuiImporter
             var text = !string.IsNullOrWhiteSpace(ownText) ? ownText : FindVisibleText(element);
             if (type == "Label") attrs.Append(" text=\"").Append(XmlEscape(text)).Append("\"");
             else if (type == "Button" && (childList == null || childList.Count == 0) && !string.IsNullOrEmpty(text)) attrs.Append(" text=\"").Append(XmlEscape(text)).Append("\"");
-            else if (type == "Входные данные")
+            else if (type == "Input" || type == "Входные данные")
             {
                 attrs.Append(" label=\"").Append(XmlEscape(text)).Append("\"");
                 attrs.Append(" value=\"\"");
@@ -1123,6 +1225,7 @@ namespace AiMultiToolKit.FuiImporter
                 case "Button": return "ui:Button";
                 case "Text": return "ui:Label";
                 case "Label": return "ui:Label";
+                case "Input": return "ui:TextField";
                 case "Входные данные": return "ui:TextField";
                 case "ProgressBar": return "ui:ProgressBar";
                 case "ScrollView": return "ui:ScrollView";
@@ -1145,6 +1248,7 @@ namespace AiMultiToolKit.FuiImporter
                 case "Button":
                 case "Text": return "Label";
                 case "Label":
+                case "Input":
                 case "Входные данные":
                 case "ProgressBar":
                 case "ScrollView":

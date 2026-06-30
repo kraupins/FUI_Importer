@@ -1,36 +1,52 @@
-# AI Multi-Tool Kit FUI Импортёр
+# AI Multi-Tool Kit — FUI Импортёр
 
-Лёгкий Editor-only пакет для Unity. Импортирует `.fui`, созданный Figma-плагином AI Multi-Tool Kit, и автоматически создаёт стандартные Unity UI Toolkit файлы.
+Unity Editor-only пакет для импорта `.fui`, созданных Figma-плагином AI Multi-Tool Kit, в Unity UI Toolkit.
+
+Минимальная версия Unity: **Unity 6.5 / 6000.5**.
 
 ## Установка через GitHub
 
-В Unity открой:
+Положите файлы пакета в корень репозитория, чтобы `package.json` лежал прямо в корне:
 
-`Window → Package Manager → + → Install package from git URL`
+```text
+FUI_Importer/
+  package.json
+  README.md
+  Editor/
+```
 
-Вставь URL репозитория:
+В Unity:
 
-`https://github.com/kraupins/FUI_Importer.git`
-
-Важно: `package.json` должен лежать в корне репозитория. Если пакет лежит в подпапке, устанавливай через `?path=/ИмяПапки`.
+```text
+Window → Package Manager → + → Install package from git URL
+https://github.com/kraupins/FUI_Importer.git
+```
 
 ## Импорт
 
-Открой окно:
+Откройте:
 
-`Инструменты → AI Multi-Tool Kit → FUI Импортёр`
+```text
+Инструменты → AI Multi-Tool Kit → FUI Импортёр
+```
 
-Выбери `.fui` файл и нажми `Импортировать .fui в UI Toolkit`.
+Выберите `.fui` и нажмите **Импортировать .fui в UI Toolkit**.
 
-Импортёр создаст:
+Импортёр автоматически создаёт:
 
-- `UI/*.uxml`
-- `UI/*.uss`
-- `Textures/*`
-- `Fonts/*`
-- `PanelSettings/*`
-- `Prefabs/*`
-- `Source/*`
-- объект с экранами в открытой сцене
+```text
+Assets/FUI_Imported/<ProjectName>/
+  UI/             UXML + USS, можно открывать в UI Builder
+  Textures/       PNG/JPG ассеты
+  Fonts/          шрифты из FUI
+  PanelSettings/  PanelSettings для UIDocument
+  Prefabs/        UIDocument-префабы
+  Scenes/         общая сцена + отдельная сцена на каждый экран
+  Source/         исходные JSON из FUI
+```
 
-После импорта этот пакет можно удалить. Созданные экраны используют только стандартные Unity-компоненты `UIDocument`, `PanelSettings`, `VisualTreeAsset`, UXML и USS.
+Также создаётся объект предпросмотра в текущей открытой сцене.
+
+## После импорта
+
+Пакет можно удалить. Сгенерированный UI остаётся рабочим, потому что использует стандартные Unity assets: `.uxml`, `.uss`, текстуры, `PanelSettings`, `UIDocument`, prefab и scene assets.
