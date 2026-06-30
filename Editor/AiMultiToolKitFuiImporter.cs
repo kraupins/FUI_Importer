@@ -1522,7 +1522,7 @@ namespace AiMultiToolKit.FuiImporter
             }
             catch (Exception ex)
             {
-                AddReportWarning(_report, "Не удалось создать TextCore gradient preset: " + ex.Message);
+                AddWarning("Не удалось создать TextCore gradient preset: " + ex.Message);
                 return string.Empty;
             }
         }
@@ -1685,18 +1685,21 @@ namespace AiMultiToolKit.FuiImporter
             var layout = FuiJson.GetObject(parent, "layout");
             var mode = FuiJson.GetString(layout, "mode", parentLayoutMode ?? "flex");
             var direction = FuiJson.GetString(layout, "flexDirection", "column").ToLowerInvariant();
+            var parentBounds = FuiJson.GetObject(parent, "bounds");
+            var parentIsLayered = IsAtomicLayered(parent) || mode.Equals("absolute", StringComparison.OrdinalIgnoreCase);
 
             var ordered = list.AsEnumerable();
-            if (mode.Equals("flex", StringComparison.OrdinalIgnoreCase))
+            if (mode.Equals("flex", StringComparison.OrdinalIgnoreCase) && !parentIsLayered)
             {
                 ordered = direction == "row"
                     ? list.OrderBy(x => GetBoundsDouble(x.Dict, "x")).ThenBy(x => GetBoundsDouble(x.Dict, "y")).ThenBy(x => x.Index)
                     : list.OrderBy(x => GetBoundsDouble(x.Dict, "y")).ThenBy(x => GetBoundsDouble(x.Dict, "x")).ThenBy(x => x.Index);
             }
-            else if (mode.Equals("absolute", StringComparison.OrdinalIgnoreCase))
+            else
             {
-                // Layered components render background/plates first, then icons/text on top.
-                ordered = list.OrderBy(x => LayerRoleWeight(x.Dict)).ThenBy(x => x.Index);
+                // Absolute/layered containers must keep visual depth, not flow order.
+                // Full-screen/oversized backgrounds go first even if Figma layer order is inconsistent.
+                ordered = list.OrderBy(x => LayerRoleWeight(x.Dict, parentBounds)).ThenBy(x => x.Index);
             }
 
             foreach (var item in ordered) yield return item.Item;
@@ -1708,17 +1711,43 @@ namespace AiMultiToolKit.FuiImporter
             return FuiJson.GetDouble(bounds, key, 0);
         }
 
-        private static int LayerRoleWeight(Dictionary<string, object> element)
+        private static int LayerRoleWeight(Dictionary<string, object> element, Dictionary<string, object> parentBounds)
         {
             if (element == null) return 50;
             var type = NormalizeType(FuiJson.GetString(element, "elementType", "Panel"));
             var name = (FuiJson.GetString(element, "name", string.Empty) + " " + FuiJson.GetString(element, "originalName", string.Empty)).ToLowerInvariant();
-            if (name.Contains("background") || name.Contains("bg") || name.Contains("fon") || name.Contains("фон") || name.Contains("plate") || name.Contains("underlay") || name.Contains("mask") || name.Contains("tint") || name.Contains("overlay")) return 10;
-            if (type == "Image") return 20;
-            if (type == "Panel") return 40;
-            if (type == "Button" || type == "CurrencyPanel" || type == "InventorySlot" || type == "ProgressBar") return 50;
-            if (type == "Label" || IsTextRasterized(element)) return 80;
-            return 60;
+            var bounds = FuiJson.GetObject(element, "bounds");
+            var anchor = FuiJson.GetObject(element, "anchor");
+            var scenario = FuiJson.GetString(anchor, "scenario", string.Empty);
+            if (scenario == "A_FULL_STRETCH_BACKGROUND" || CoversParent(bounds, parentBounds, 0.72)) return 0;
+            if (name.Contains("background") || name.Contains("bg") || name.Contains("fon") || name.Contains("фон") || name.Contains("back")) return 5;
+            if (name.Contains("track") || name.Contains("bar_bg") || name.Contains("bar bg") || name.Contains("plate") || name.Contains("плаш")) return 10;
+            if (name.Contains("mask") || name.Contains("underlay")) return 12;
+            if (name.Contains("fill") || name.Contains("progress") || name.Contains("loading")) return 25;
+            if (name.Contains("tint") || name.Contains("overlay") || name.Contains("shade")) return 30;
+            if (type == "Image") return 40;
+            if (type == "Panel") return 50;
+            if (type == "Button" || type == "CurrencyPanel" || type == "InventorySlot" || type == "ProgressBar") return 60;
+            if (type == "Label" || IsTextRasterized(element)) return 90;
+            return 70;
+        }
+
+        private static bool CoversParent(Dictionary<string, object> bounds, Dictionary<string, object> parentBounds, double minRatio)
+        {
+            if (bounds == null || parentBounds == null) return false;
+            var pw = FuiJson.GetDouble(parentBounds, "width", 0);
+            var ph = FuiJson.GetDouble(parentBounds, "height", 0);
+            var w = FuiJson.GetDouble(bounds, "width", 0);
+            var h = FuiJson.GetDouble(bounds, "height", 0);
+            if (pw <= 0 || ph <= 0 || w <= 0 || h <= 0) return false;
+            var parentArea = pw * ph;
+            var ownArea = w * h;
+            if ((ownArea / parentArea) >= minRatio) return true;
+            var px = FuiJson.GetDouble(parentBounds, "x", 0);
+            var py = FuiJson.GetDouble(parentBounds, "y", 0);
+            var x = FuiJson.GetDouble(bounds, "x", 0);
+            var y = FuiJson.GetDouble(bounds, "y", 0);
+            return x <= px + 2 && y <= py + 2 && x + w >= px + pw - 2 && y + h >= py + ph - 2;
         }
 
         private static string MapUxmlTag(string type)
