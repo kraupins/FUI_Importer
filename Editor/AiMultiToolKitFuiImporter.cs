@@ -28,22 +28,22 @@ namespace AiMultiToolKit.FuiImporter
         private FuiImportReport _lastReport;
         private string _lastError = string.Empty;
 
-        [MenuItem("Tools/AI Multi-Tool Kit/FUI Importer")]
+        [MenuItem("Инструменты/AI Multi-Tool Kit/FUI Импортёр")]
         public static void OpenWindow()
         {
-            var window = GetWindow<AiFuiImporterWindow>("FUI Importer");
+            var window = GetWindow<AiFuiImporterWindow>("FUI Импортёр");
             window.minSize = new Vector2(460, 420);
             window.Show();
         }
 
-        [MenuItem("Assets/AI Multi-Tool Kit/Import selected .fui", true)]
+        [MenuItem("Assets/AI Multi-Tool Kit/Импортировать выбранный .fui", true)]
         private static bool ValidateImportSelectedFui()
         {
             var path = GetSelectedProjectPath();
             return !string.IsNullOrEmpty(path) && path.EndsWith(".fui", StringComparison.OrdinalIgnoreCase);
         }
 
-        [MenuItem("Assets/AI Multi-Tool Kit/Import selected .fui")]
+        [MenuItem("Assets/AI Multi-Tool Kit/Импортировать выбранный .fui")]
         private static void ImportSelectedFui()
         {
             var path = GetSelectedProjectPath();
@@ -52,12 +52,12 @@ namespace AiMultiToolKit.FuiImporter
             try
             {
                 var report = AiFuiImporter.Import(absolute, new FuiImportOptions());
-                EditorUtility.DisplayDialog("FUI Import", report.ToHumanString(), "OK");
+                EditorUtility.DisplayDialog("FUI Импорт", report.ToHumanString(), "OK");
             }
             catch (Exception ex)
             {
                 Debug.LogException(ex);
-                EditorUtility.DisplayDialog("FUI Import Error", ex.Message, "OK");
+                EditorUtility.DisplayDialog("Ошибка импорта FUI", ex.Message, "OK");
             }
         }
 
@@ -74,36 +74,36 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.Space(6);
             EditorGUILayout.LabelField("AI Multi-Tool Kit · FUI → Unity UI Toolkit", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "Импортирует .fui из Figma-плагина, раскладывает ассеты и генерирует стандартные UXML/USS. " +
-                "После импорта папку этого импортёра можно удалить: созданный UI не зависит от кастомного runtime-кода.",
+                "Импортирует .fui из Figma-плагина, раскладывает ассеты и автоматически создаёт UXML/USS, текстуры, шрифты, PanelSettings и UIDocument-префабы. " +
+                "После импорта этот пакет можно удалить: созданный UI остаётся на стандартном Unity UI Toolkit.",
                 MessageType.Info);
 
             EditorGUILayout.Space(8);
-            EditorGUILayout.LabelField("Input", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("Входные данные", EditorStyles.boldLabel);
             using (new EditorGUILayout.HorizontalScope())
             {
-                _fuiPath = EditorGUILayout.TextField(".fui file", _fuiPath);
-                if (GUILayout.Button("Browse", GUILayout.Width(86)))
+                _fuiPath = EditorGUILayout.TextField(".fui файл", _fuiPath);
+                if (GUILayout.Button("Выбрать", GUILayout.Width(86)))
                 {
-                    var picked = EditorUtility.OpenFilePanel("Select .fui package", string.Empty, "fui,zip");
+                    var picked = EditorUtility.OpenFilePanel("Выбрать .fui пакет", string.Empty, "fui,zip");
                     if (!string.IsNullOrEmpty(picked)) _fuiPath = picked;
                 }
             }
 
             EditorGUILayout.Space(8);
-            EditorGUILayout.LabelField("Output", EditorStyles.boldLabel);
-            _outputRoot = EditorGUILayout.TextField("Output root", _outputRoot);
-            _createPackageSubfolder = EditorGUILayout.ToggleLeft("Create subfolder by package/project name", _createPackageSubfolder);
-            _overwriteExisting = EditorGUILayout.ToggleLeft("Overwrite existing generated files", _overwriteExisting);
-            _importTexturesForUiToolkit = EditorGUILayout.ToggleLeft("Apply recommended Texture settings for UI Toolkit", _importTexturesForUiToolkit);
-            _createPanelSettings = EditorGUILayout.ToggleLeft("Create PanelSettings asset", _createPanelSettings);
-            _createScreenPrefabs = EditorGUILayout.ToggleLeft("Create ready UIDocument prefabs", _createScreenPrefabs);
-            _addScreensToOpenScene = EditorGUILayout.ToggleLeft("Add generated screens to the open scene", _addScreensToOpenScene);
+            EditorGUILayout.LabelField("Куда импортировать", EditorStyles.boldLabel);
+            _outputRoot = EditorGUILayout.TextField("Папка вывода", _outputRoot);
+            _createPackageSubfolder = EditorGUILayout.ToggleLeft("Создать подпапку по названию проекта", _createPackageSubfolder);
+            _overwriteExisting = EditorGUILayout.ToggleLeft("Перезаписывать существующие файлы", _overwriteExisting);
+            _importTexturesForUiToolkit = EditorGUILayout.ToggleLeft("Применить настройки текстур для UI Toolkit", _importTexturesForUiToolkit);
+            _createPanelSettings = EditorGUILayout.ToggleLeft("Создать PanelSettings", _createPanelSettings);
+            _createScreenPrefabs = EditorGUILayout.ToggleLeft("Создать готовые префабы UIDocument", _createScreenPrefabs);
+            _addScreensToOpenScene = EditorGUILayout.ToggleLeft("Добавить экраны в открытую сцену", _addScreensToOpenScene);
 
             EditorGUILayout.Space(10);
             using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(_fuiPath)))
             {
-                if (GUILayout.Button("Import .fui to UI Toolkit", GUILayout.Height(34)))
+                if (GUILayout.Button("Импортировать .fui в UI Toolkit", GUILayout.Height(34)))
                 {
                     RunImport();
                 }
@@ -118,16 +118,16 @@ namespace AiMultiToolKit.FuiImporter
             if (_lastReport != null)
             {
                 EditorGUILayout.Space(10);
-                EditorGUILayout.LabelField("Last import", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField("Последний импорт", EditorStyles.boldLabel);
                 EditorGUILayout.HelpBox(_lastReport.ToHumanString(), MessageType.None);
                 using (new EditorGUILayout.HorizontalScope())
                 {
-                    if (GUILayout.Button("Ping output folder"))
+                    if (GUILayout.Button("Показать папку"))
                     {
                         var folder = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(_lastReport.OutputRootAssetPath);
                         if (folder != null) EditorGUIUtility.PingObject(folder);
                     }
-                    if (GUILayout.Button("Open in Explorer/Finder"))
+                    if (GUILayout.Button("Открыть в проводнике/Finder"))
                     {
                         EditorUtility.RevealInFinder(AiFuiImporterUtility.ToAbsolutePath(_lastReport.OutputRootAssetPath));
                     }
@@ -136,11 +136,13 @@ namespace AiMultiToolKit.FuiImporter
 
             EditorGUILayout.Space(12);
             EditorGUILayout.HelpBox(
-                "Generated structure:\n" +
-                "UI/*.uxml + UI/*.uss — ready for UI Document / UI Builder\n" +
-                "Textures/* — images referenced by USS background-image\n" +
-                "Fonts/* — copied font files, if they were packed into .fui\n" +
-                "Source/* — manifest/metadata/screen JSON for debugging",
+                "Что будет создано:\n" +
+                "UI/*.uxml + UI/*.uss — готово для UI Document / UI Builder\n" +
+                "Textures/* — картинки, которые подключаются в USS через background-image\n" +
+                "Fonts/* — шрифты из .fui, если они были упакованы\n" +
+                "PanelSettings/* — настройки панели UI Toolkit\n" +
+                "Prefabs/* — готовые UIDocument-префабы\n" +
+                "Source/* — исходные JSON для проверки и отладки",
                 MessageType.None);
 
             EditorGUILayout.EndScrollView();
@@ -165,8 +167,8 @@ namespace AiMultiToolKit.FuiImporter
                 };
 
                 _lastReport = AiFuiImporter.Import(_fuiPath, options);
-                Debug.Log("[AI FUI Importer] " + _lastReport.ToHumanString());
-                EditorUtility.DisplayDialog("FUI Import Complete", _lastReport.ToHumanString(), "OK");
+                Debug.Log("[FUI Импортёр] " + _lastReport.ToHumanString());
+                EditorUtility.DisplayDialog("Импорт FUI завершён", _lastReport.ToHumanString(), "OK");
             }
             catch (Exception ex)
             {
@@ -206,19 +208,19 @@ namespace AiMultiToolKit.FuiImporter
         public string ToHumanString()
         {
             var sb = new StringBuilder();
-            sb.AppendLine("Package: " + (PackageName ?? "FUI"));
-            sb.AppendLine("Output: " + (OutputRootAssetPath ?? ""));
-            sb.AppendLine("Screens: " + ScreenCount);
+            sb.AppendLine("Пакет: " + (PackageName ?? "FUI"));
+            sb.AppendLine("Папка: " + (OutputRootAssetPath ?? ""));
+            sb.AppendLine("Экраны: " + ScreenCount);
             sb.AppendLine("UXML: " + GeneratedUxml.Count);
             sb.AppendLine("USS: " + GeneratedUss.Count);
-            sb.AppendLine("Prefabs: " + GeneratedPrefabs.Count);
+            sb.AppendLine("Префабы: " + GeneratedPrefabs.Count);
             if (!string.IsNullOrEmpty(PanelSettingsAssetPath)) sb.AppendLine("PanelSettings: " + PanelSettingsAssetPath);
-            if (!string.IsNullOrEmpty(SceneRootObjectName)) sb.AppendLine("Scene root: " + SceneRootObjectName);
-            sb.AppendLine("Textures: " + CopiedTextureCount);
-            sb.AppendLine("Fonts copied: " + CopiedFontCount);
+            if (!string.IsNullOrEmpty(SceneRootObjectName)) sb.AppendLine("Объект в сцене: " + SceneRootObjectName);
+            sb.AppendLine("Текстуры: " + CopiedTextureCount);
+            sb.AppendLine("Шрифты скопированы: " + CopiedFontCount);
             if (WarningCount > 0)
             {
-                sb.AppendLine("Warnings: " + WarningCount);
+                sb.AppendLine("Предупреждения: " + WarningCount);
                 for (var i = 0; i < Math.Min(Warnings.Count, 8); i++) sb.AppendLine("- " + Warnings[i]);
             }
             return sb.ToString().TrimEnd();
@@ -230,12 +232,12 @@ namespace AiMultiToolKit.FuiImporter
         public static FuiImportReport Import(string fuiFilePath, FuiImportOptions options)
         {
             options = options ?? new FuiImportOptions();
-            if (string.IsNullOrEmpty(fuiFilePath)) throw new ArgumentException("FUI path is empty.");
-            if (!File.Exists(fuiFilePath)) throw new FileNotFoundException("FUI file not found.", fuiFilePath);
+            if (string.IsNullOrEmpty(fuiFilePath)) throw new ArgumentException("Путь к FUI пустой.");
+            if (!File.Exists(fuiFilePath)) throw new FileNotFoundException("FUI файл не найден.", fuiFilePath);
 
             var normalizedRoot = AiFuiImporterUtility.NormalizeAssetPath(options.OutputRootAssetPath);
             if (!normalizedRoot.StartsWith("Assets/", StringComparison.Ordinal) && normalizedRoot != "Assets")
-                throw new ArgumentException("Output root must be inside Assets/. Example: Assets/FUI_Imported");
+                throw new ArgumentException("Папка вывода должна быть внутри Assets/. Пример: Assets/FUI_Imported");
 
             var package = FuiPackage.Read(fuiFilePath);
             var projectName = AiFuiImporterUtility.SanitizeFileName(package.ProjectName, Path.GetFileNameWithoutExtension(fuiFilePath));
@@ -374,7 +376,7 @@ namespace AiMultiToolKit.FuiImporter
                     return candidate;
                 }
             }
-            throw new IOException("Could not create unique output folder for " + outputRoot);
+            throw new IOException("Не удалось создать уникальную папку вывода для " + outputRoot);
         }
 
         private static void WriteTextAsset(string assetPath, string text)
@@ -457,7 +459,7 @@ namespace AiMultiToolKit.FuiImporter
                 var visualTree = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(screen.UxmlPath);
                 if (visualTree == null)
                 {
-                    AddReportWarning(report, "Could not load generated UXML as VisualTreeAsset: " + screen.UxmlPath);
+                    AddReportWarning(report, "Не удалось загрузить созданный UXML как VisualTreeAsset: " + screen.UxmlPath);
                     continue;
                 }
 
@@ -483,7 +485,7 @@ namespace AiMultiToolKit.FuiImporter
         {
             if (EditorApplication.isPlayingOrWillChangePlaymode)
             {
-                AddReportWarning(report, "Scene objects were not created because the Editor is entering Play Mode.");
+                AddReportWarning(report, "Объекты сцены не созданы, потому что Unity переходит в Play Mode.");
                 return;
             }
             if (screens == null || screens.Count == 0) return;
@@ -499,7 +501,7 @@ namespace AiMultiToolKit.FuiImporter
                 var visualTree = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(screen.UxmlPath);
                 if (visualTree == null)
                 {
-                    AddReportWarning(report, "Could not create scene UIDocument. Missing UXML asset: " + screen.UxmlPath);
+                    AddReportWarning(report, "Не удалось создать UIDocument в сцене. Не найден UXML: " + screen.UxmlPath);
                     continue;
                 }
 
@@ -576,7 +578,7 @@ namespace AiMultiToolKit.FuiImporter
             }
             catch (Exception zipException)
             {
-                Debug.LogWarning("[AI FUI Importer] Standard ZipArchive read failed. Trying tolerant FUI zip reader. Reason: " + zipException.Message);
+                Debug.LogWarning("[FUI Импортёр] Standard ZipArchive read failed. Trying tolerant FUI zip reader. Reason: " + zipException.Message);
                 var entries = FuiTolerantZipReader.ReadStoredZip(fuiFilePath);
                 return FromArchiveFiles(fuiFilePath, entries);
             }
@@ -625,7 +627,7 @@ namespace AiMultiToolKit.FuiImporter
                 }
             }
 
-            if (package.Screens.Count == 0) throw new InvalidDataException("No screens/*.json found in FUI package.");
+            if (package.Screens.Count == 0) throw new InvalidDataException("В FUI пакете не найдены screens/*.json.");
             return package;
         }
 
@@ -691,7 +693,7 @@ namespace AiMultiToolKit.FuiImporter
         {
             var data = File.ReadAllBytes(path);
             var eocd = FindEndOfCentralDirectory(data);
-            if (eocd < 0) throw new InvalidDataException("Invalid FUI zip: central directory not found.");
+            if (eocd < 0) throw new InvalidDataException("Некорректный FUI zip: не найден central directory.");
 
             var totalEntries = ReadUInt16(data, eocd + 10);
             var centralOffset = (int)ReadUInt32(data, eocd + 16);
@@ -701,7 +703,7 @@ namespace AiMultiToolKit.FuiImporter
             for (var i = 0; i < totalEntries; i++)
             {
                 if (cursor + 46 > data.Length || ReadUInt32(data, cursor) != 0x02014b50)
-                    throw new InvalidDataException("Invalid FUI zip: central directory entry is corrupted.");
+                    throw new InvalidDataException("Некорректный FUI zip: повреждена запись central directory.");
 
                 var method = ReadUInt16(data, cursor + 10);
                 var compressedSize = (int)ReadUInt32(data, cursor + 20);
@@ -712,9 +714,9 @@ namespace AiMultiToolKit.FuiImporter
                 var fileName = Encoding.UTF8.GetString(data, cursor + 46, nameLength);
 
                 if (method != 0)
-                    throw new InvalidDataException("Tolerant FUI reader supports only stored zip entries. Standard ZipArchive should be used for compressed files.");
+                    throw new InvalidDataException("Tolerant FUI reader поддерживает только stored zip entries. Для сжатых файлов должен использоваться стандартный ZipArchive.");
                 if (localOffset + 30 > data.Length || ReadUInt32(data, localOffset) != 0x04034b50)
-                    throw new InvalidDataException("Invalid FUI zip: local file header is corrupted for " + fileName);
+                    throw new InvalidDataException("Некорректный FUI zip: повреждён local file header для " + fileName);
 
                 var localNameLength = ReadUInt16(data, localOffset + 26);
                 var localExtraLength = ReadUInt16(data, localOffset + 28);
@@ -727,7 +729,7 @@ namespace AiMultiToolKit.FuiImporter
                     dataStart = localOffset + 30 + localNameLength;
 
                 if (dataStart < 0 || dataStart + compressedSize > data.Length)
-                    throw new InvalidDataException("Invalid FUI zip: entry data is out of range for " + fileName);
+                    throw new InvalidDataException("Некорректный FUI zip: данные entry вне диапазона для " + fileName);
 
                 var bytes = new byte[compressedSize];
                 Buffer.BlockCopy(data, dataStart, bytes, 0, compressedSize);
@@ -894,7 +896,7 @@ namespace AiMultiToolKit.FuiImporter
             var text = !string.IsNullOrWhiteSpace(ownText) ? ownText : FindVisibleText(element);
             if (type == "Label") attrs.Append(" text=\"").Append(XmlEscape(text)).Append("\"");
             else if (type == "Button" && (childList == null || childList.Count == 0) && !string.IsNullOrEmpty(text)) attrs.Append(" text=\"").Append(XmlEscape(text)).Append("\"");
-            else if (type == "Input")
+            else if (type == "Входные данные")
             {
                 attrs.Append(" label=\"").Append(XmlEscape(text)).Append("\"");
                 attrs.Append(" value=\"\"");
@@ -1106,7 +1108,7 @@ namespace AiMultiToolKit.FuiImporter
             if (string.IsNullOrEmpty(resolved) && !string.IsNullOrEmpty(id)) _assetPathMap.TryGetValue(id, out resolved);
             if (string.IsNullOrEmpty(resolved))
             {
-                AddWarning("Missing texture for assetRef " + (path == string.Empty ? id : path));
+                AddWarning("Не найдена текстура для assetRef " + (path == string.Empty ? id : path));
                 return;
             }
 
@@ -1121,7 +1123,7 @@ namespace AiMultiToolKit.FuiImporter
                 case "Button": return "ui:Button";
                 case "Text": return "ui:Label";
                 case "Label": return "ui:Label";
-                case "Input": return "ui:TextField";
+                case "Входные данные": return "ui:TextField";
                 case "ProgressBar": return "ui:ProgressBar";
                 case "ScrollView": return "ui:ScrollView";
                 case "Slider": return "ui:Slider";
@@ -1143,7 +1145,7 @@ namespace AiMultiToolKit.FuiImporter
                 case "Button":
                 case "Text": return "Label";
                 case "Label":
-                case "Input":
+                case "Входные данные":
                 case "ProgressBar":
                 case "ScrollView":
                 case "CurrencyPanel":
