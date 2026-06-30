@@ -311,7 +311,7 @@ namespace AiMultiToolKit.FuiImporter
                 var uxmlPath = AiFuiImporterUtility.CombineAssetPath(uiRoot, screenName + ".uxml");
                 var sourcePath = AiFuiImporterUtility.CombineAssetPath(sourceRoot, "screen_" + screenName + ".json");
 
-                var generator = new FuiUiToolkitGenerator(screen, ussPath, assetPathMap, fontPathMap, package.FontMetadata, report);
+                var generator = new FuiUiToolkitGenerator(screen, ussPath, assetPathMap, fontPathMap, package.FontMetadata, AiFuiImporterUtility.CombineAssetPath(outputRoot, "TextGradients"), report);
                 var generated = generator.Generate();
 
                 WriteTextAsset(uxmlPath, generated.Uxml);
@@ -530,6 +530,22 @@ namespace AiMultiToolKit.FuiImporter
             }
         }
 
+        private static int GetDefaultActiveScreenIndex(List<FuiGeneratedScreenAsset> screens)
+        {
+            if (screens == null || screens.Count == 0) return 0;
+            for (var i = 0; i < screens.Count; i++)
+            {
+                var n = (screens[i] != null ? screens[i].Name : string.Empty).ToLowerInvariant();
+                if ((n.Contains("main") || n.Contains("menu")) && !n.Contains("loading") && !n.Contains("background")) return i;
+            }
+            for (var i = 0; i < screens.Count; i++)
+            {
+                var n = (screens[i] != null ? screens[i].Name : string.Empty).ToLowerInvariant();
+                if (!n.Contains("loading") && !n.Contains("background")) return i;
+            }
+            return 0;
+        }
+
         private static void CreateAllScreensScene(string sceneAssetPath, string projectName, List<FuiGeneratedScreenAsset> screens, PanelSettings panelSettings, FuiImportReport report)
         {
             Scene scene = default(Scene);
@@ -542,9 +558,10 @@ namespace AiMultiToolKit.FuiImporter
                 var root = new GameObject(rootName);
                 SceneManager.MoveGameObjectToScene(root, scene);
 
+                var defaultActiveIndex = GetDefaultActiveScreenIndex(screens);
                 for (var i = 0; i < screens.Count; i++)
                 {
-                    var go = CreateUiToolkitPanelObject(screens[i], panelSettings, i, i == 0, report);
+                    var go = CreateUiToolkitPanelObject(screens[i], panelSettings, i, i == defaultActiveIndex, report);
                     if (go == null) continue;
                     SceneManager.MoveGameObjectToScene(go, scene);
                     go.transform.SetParent(root.transform, false);
@@ -1089,18 +1106,20 @@ namespace AiMultiToolKit.FuiImporter
         private readonly Dictionary<string, string> _assetPathMap;
         private readonly Dictionary<string, string> _fontPathMap;
         private readonly List<FuiFontMeta> _fontMetadata;
+        private readonly string _textGradientFolderPath;
         private readonly FuiImportReport _report;
         private readonly StringBuilder _uss = new StringBuilder();
         private int _elementSeq;
         private string _screenClass;
 
-        public FuiUiToolkitGenerator(Dictionary<string, object> screen, string ussAssetPath, Dictionary<string, string> assetPathMap, Dictionary<string, string> fontPathMap, List<FuiFontMeta> fontMetadata, FuiImportReport report)
+        public FuiUiToolkitGenerator(Dictionary<string, object> screen, string ussAssetPath, Dictionary<string, string> assetPathMap, Dictionary<string, string> fontPathMap, List<FuiFontMeta> fontMetadata, string textGradientFolderPath, FuiImportReport report)
         {
             _screen = screen;
             _ussAssetPath = ussAssetPath;
             _assetPathMap = assetPathMap ?? new Dictionary<string, string>();
             _fontPathMap = fontPathMap ?? new Dictionary<string, string>();
             _fontMetadata = fontMetadata ?? new List<FuiFontMeta>();
+            _textGradientFolderPath = textGradientFolderPath ?? string.Empty;
             _report = report;
         }
 
@@ -1249,7 +1268,11 @@ namespace AiMultiToolKit.FuiImporter
             var height = FuiJson.GetDouble(bounds, "height", 0);
             var scenario = FuiJson.GetString(anchor, "scenario", string.Empty);
             var parentAbsolute = string.Equals(parentLayoutMode, "absolute", StringComparison.OrdinalIgnoreCase);
-            var forceAbsolute = parentAbsolute
+            // Figma coordinates are absolute within the selected screen. For pixel-perfect UI Builder output,
+            // every non-root element is positioned locally relative to its parent. Flex metadata stays in the FUI
+            // for future adaptive tooling, but the generated UXML/USS must visually match Figma first.
+            var forceAbsolute = !isRoot
+                || parentAbsolute
                 || scenario == "A_FULL_STRETCH_BACKGROUND"
                 || scenario == "B_BOTTOM_RIGHT"
                 || scenario == "ABSOLUTE_FALLBACK"
@@ -1293,6 +1316,8 @@ namespace AiMultiToolKit.FuiImporter
             {
                 _uss.AppendLine("  overflow: visible;");
                 _uss.AppendLine("  white-space: normal;");
+                _uss.AppendLine("  -unity-text-generator: advanced;");
+                _uss.AppendLine("  -unity-text-overflow-position: end;");
             }
             if (type != "Image" || !IsTextRasterized(element)) AppendTextStyle(style);
             AppendAssetBackground(assetRef);
@@ -1442,6 +1467,8 @@ namespace AiMultiToolKit.FuiImporter
                 AppendPx("-unity-text-outline-width", outlineWidth.Value);
             }
 
+            AppendTextEffects(style);
+
             var fontStyle = FuiJson.GetString(style, "fontStyle", string.Empty);
             var mapped = ToUnityFontStyle(fontStyle);
             if (!string.IsNullOrEmpty(mapped)) _uss.AppendLine("  -unity-font-style: " + mapped + ";");
@@ -1459,6 +1486,100 @@ namespace AiMultiToolKit.FuiImporter
                 {
                     _uss.AppendLine("  /* Figma font family: " + CssComment(family) + ". Font file was not found in this FUI package. */");
                 }
+            }
+        }
+
+
+        private string BuildEditableLabelText(string text, Dictionary<string, object> style, string elementName)
+        {
+            var raw = text ?? string.Empty;
+            var gradient = FuiJson.GetObject(style, "textGradient");
+            if (gradient == null) return raw;
+            var presetName = EnsureTextGradientPreset(gradient, elementName);
+            if (string.IsNullOrEmpty(presetName)) return raw;
+            // UI Toolkit uses TextCore rich text gradient tags. The value is XML-escaped later.
+            return "<color=white><gradient=\"" + presetName + "\">" + raw + "</gradient></color>";
+        }
+
+        private string EnsureTextGradientPreset(Dictionary<string, object> gradient, string elementName)
+        {
+            try
+            {
+                if (gradient == null || string.IsNullOrEmpty(_textGradientFolderPath)) return string.Empty;
+                AiFuiImporterUtility.EnsureAssetFolder(_textGradientFolderPath);
+                var safeName = AiFuiImporterUtility.SanitizeFileName("fui_gradient_" + elementName, "fui_gradient");
+                var assetPath = AiFuiImporterUtility.CombineAssetPath(_textGradientFolderPath, safeName + ".asset");
+                var gradientType = Type.GetType("UnityEngine.TextCore.Text.TextColorGradient, UnityEngine.TextCoreTextEngineModule")
+                    ?? Type.GetType("UnityEngine.TextCore.Text.TextColorGradient, UnityEngine.TextCoreFontEngineModule")
+                    ?? AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType("UnityEngine.TextCore.Text.TextColorGradient")).FirstOrDefault(t => t != null);
+                if (gradientType == null) return string.Empty;
+                var existing = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(assetPath);
+                var obj = existing != null ? existing : ScriptableObject.CreateInstance(gradientType);
+                ApplyTextGradientColors(obj, gradient);
+                if (existing == null) AssetDatabase.CreateAsset(obj, assetPath);
+                else EditorUtility.SetDirty(obj);
+                return safeName;
+            }
+            catch (Exception ex)
+            {
+                AddReportWarning(_report, "Не удалось создать TextCore gradient preset: " + ex.Message);
+                return string.Empty;
+            }
+        }
+
+        private static void ApplyTextGradientColors(UnityEngine.Object obj, Dictionary<string, object> gradient)
+        {
+            if (obj == null || gradient == null) return;
+            var stops = FuiJson.GetArray(gradient, "stops");
+            var c0 = stops != null && stops.Count > 0 ? FuiJson.GetObject(stops[0] as Dictionary<string, object>, "color") : null;
+            var c1 = stops != null && stops.Count > 1 ? FuiJson.GetObject(stops[stops.Count - 1] as Dictionary<string, object>, "color") : c0;
+            var top = ToUnityColor(c0, Color.white);
+            var bottom = ToUnityColor(c1, top);
+            var so = new SerializedObject(obj);
+            TrySetSerializedColor(so, "m_TopLeft", top);
+            TrySetSerializedColor(so, "m_TopRight", top);
+            TrySetSerializedColor(so, "m_BottomLeft", bottom);
+            TrySetSerializedColor(so, "m_BottomRight", bottom);
+            TrySetSerializedColor(so, "topLeft", top);
+            TrySetSerializedColor(so, "topRight", top);
+            TrySetSerializedColor(so, "bottomLeft", bottom);
+            TrySetSerializedColor(so, "bottomRight", bottom);
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void TrySetSerializedColor(SerializedObject so, string propertyName, Color color)
+        {
+            var p = so.FindProperty(propertyName);
+            if (p != null && p.propertyType == SerializedPropertyType.Color) p.colorValue = color;
+        }
+
+        private static Color ToUnityColor(Dictionary<string, object> c, Color fallback)
+        {
+            if (c == null) return fallback;
+            return new Color(
+                (float)(FuiJson.GetDouble(c, "r", fallback.r * 255.0) / 255.0),
+                (float)(FuiJson.GetDouble(c, "g", fallback.g * 255.0) / 255.0),
+                (float)(FuiJson.GetDouble(c, "b", fallback.b * 255.0) / 255.0),
+                (float)FuiJson.GetDouble(c, "a", fallback.a)
+            );
+        }
+
+        private void AppendTextEffects(Dictionary<string, object> style)
+        {
+            var effects = FuiJson.GetArray(style, "effects");
+            if (effects == null || effects.Count == 0) return;
+            foreach (var item in effects)
+            {
+                var effect = item as Dictionary<string, object>;
+                if (effect == null) continue;
+                var type = FuiJson.GetString(effect, "type", string.Empty);
+                if (!type.Contains("shadow")) continue;
+                var color = FuiJson.GetObject(effect, "color");
+                var x = FuiJson.GetDouble(effect, "offsetX", 0);
+                var y = FuiJson.GetDouble(effect, "offsetY", 0);
+                var blur = FuiJson.GetDouble(effect, "blur", 0);
+                _uss.AppendLine("  text-shadow: " + Num(x) + "px " + Num(y) + "px " + Num(blur) + "px " + ColorToCss(color) + ";");
+                break;
             }
         }
 
@@ -1543,15 +1664,8 @@ namespace AiMultiToolKit.FuiImporter
 
         private static bool IsTextRasterized(Dictionary<string, object> element)
         {
-            if (element == null) return false;
-            if (FuiJson.GetString(element, "textRenderMode", string.Empty).Equals("image", StringComparison.OrdinalIgnoreCase)) return true;
-            if (FuiJson.GetString(element, "textAsImage", string.Empty).Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
-            var style = FuiJson.GetObject(element, "style");
-            if (style != null)
-            {
-                if (FuiJson.GetString(style, "textRenderMode", string.Empty).Equals("image", StringComparison.OrdinalIgnoreCase)) return true;
-                if (FuiJson.GetString(style, "textRasterized", string.Empty).Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
-            }
+            // Text must remain editable. Figma gradients, shadows and outlines are mapped to
+            // UI Toolkit rich text / USS text effects instead of baking PNG text.
             return false;
         }
 
