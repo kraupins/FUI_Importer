@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Text;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -1171,11 +1172,15 @@ namespace AiMultiToolKit.FuiImporter
             var childList = FuiJson.GetArray(element, "children");
             var ownText = GetOwnText(element);
             var type = rawType;
+            var style = FuiJson.GetObject(element, "style");
+            var textAsImage = IsTextRasterized(element);
 
             // Figma groups that contain several text nodes can be marked as Label by the exporter.
             // UI Toolkit Label cannot hold children, so group-labels become VisualElement containers
-            // while true Figma TEXT nodes still become ui:Label.
-            if (rawType == "Label" && childList != null && childList.Count > 0 && string.IsNullOrWhiteSpace(ownText))
+            // while true Figma TEXT nodes still become ui:Label. Rich Figma text with gradient/stroke/shadow
+            // is rasterized by the Figma plugin and becomes a VisualElement with background-image.
+            if (rawType == "Label" && textAsImage) type = "Image";
+            else if (rawType == "Label" && childList != null && childList.Count > 0 && string.IsNullOrWhiteSpace(ownText))
                 type = "Panel";
 
             var tag = MapUxmlTag(type);
@@ -1185,6 +1190,8 @@ namespace AiMultiToolKit.FuiImporter
             var classes = new List<string> { "fui_element", className, "fui_type_" + rawType.ToLowerInvariant() };
             if (type != rawType) classes.Add("fui_as_" + type.ToLowerInvariant());
             if (type == "Button") classes.Add("fui_button");
+            if (textAsImage) classes.Add("fui_text_image");
+            if (IsAtomicLayered(element)) classes.Add("fui_layered");
             if (isRoot) classes.Add(_screenClass);
 
             AppendStyle(element, className, type, isRoot, parentLayoutMode, parentBounds);
@@ -1196,7 +1203,7 @@ namespace AiMultiToolKit.FuiImporter
             attrs.Append(" class=\"").Append(XmlEscape(string.Join(" ", classes.ToArray()))).Append("\"");
 
             var text = !string.IsNullOrWhiteSpace(ownText) ? ownText : FindVisibleText(element);
-            if (type == "Label") attrs.Append(" text=\"").Append(XmlEscape(text)).Append("\"");
+            if (type == "Label" && !textAsImage) attrs.Append(" text=\"").Append(XmlEscape(text)).Append("\"");
             else if (type == "Button" && (childList == null || childList.Count == 0) && !string.IsNullOrEmpty(text)) attrs.Append(" text=\"").Append(XmlEscape(text)).Append("\"");
             else if (type == "Input" || type == "Входные данные")
             {
@@ -1222,7 +1229,7 @@ namespace AiMultiToolKit.FuiImporter
             var ownLayoutMode = FuiJson.GetString(layout, "mode", "flex");
             var sb = new StringBuilder();
             sb.Append(pad).Append("<").Append(tag).Append(attrs).AppendLine(">");
-            foreach (var child in childList)
+            foreach (var child in OrderChildrenForUxml(element, childList, ownLayoutMode))
             {
                 var childDict = child as Dictionary<string, object>;
                 if (childDict != null) sb.Append(BuildElementXml(childDict, indent + 1, false, ownLayoutMode, FuiJson.GetObject(element, "bounds")));
@@ -1242,7 +1249,11 @@ namespace AiMultiToolKit.FuiImporter
             var height = FuiJson.GetDouble(bounds, "height", 0);
             var scenario = FuiJson.GetString(anchor, "scenario", string.Empty);
             var parentAbsolute = string.Equals(parentLayoutMode, "absolute", StringComparison.OrdinalIgnoreCase);
-            var forceAbsolute = parentAbsolute || scenario == "A_FULL_STRETCH_BACKGROUND" || scenario == "B_BOTTOM_RIGHT";
+            var forceAbsolute = parentAbsolute
+                || scenario == "A_FULL_STRETCH_BACKGROUND"
+                || scenario == "B_BOTTOM_RIGHT"
+                || scenario == "ABSOLUTE_FALLBACK"
+                || scenario.StartsWith("MODAL_", StringComparison.OrdinalIgnoreCase);
 
             _uss.AppendLine("." + className + " {");
 
@@ -1278,8 +1289,19 @@ namespace AiMultiToolKit.FuiImporter
 
             AppendLayout(layout);
             AppendVisualStyle(style);
-            AppendTextStyle(style);
+            if (type == "Label")
+            {
+                _uss.AppendLine("  overflow: visible;");
+                _uss.AppendLine("  white-space: normal;");
+            }
+            if (type != "Image" || !IsTextRasterized(element)) AppendTextStyle(style);
             AppendAssetBackground(assetRef);
+
+            if (IsTextRasterized(element))
+            {
+                _uss.AppendLine("  overflow: visible;");
+                _uss.AppendLine("  background-repeat: no-repeat;");
+            }
 
             if (type == "Button")
             {
@@ -1292,6 +1314,9 @@ namespace AiMultiToolKit.FuiImporter
 
         private void AppendAbsoluteAnchor(Dictionary<string, object> anchor, Dictionary<string, object> bounds, Dictionary<string, object> parentBounds, double width, double height)
         {
+            var localX = FuiJson.GetDouble(bounds, "x", 0) - FuiJson.GetDouble(parentBounds, "x", 0);
+            var localY = FuiJson.GetDouble(bounds, "y", 0) - FuiJson.GetDouble(parentBounds, "y", 0);
+
             if (anchor != null)
             {
                 var scenario = FuiJson.GetString(anchor, "scenario", string.Empty);
@@ -1304,19 +1329,25 @@ namespace AiMultiToolKit.FuiImporter
                     return;
                 }
 
-                if (anchor.ContainsKey("left")) AppendPx("left", FuiJson.GetDouble(anchor, "left", 0));
-                if (anchor.ContainsKey("right")) AppendPx("right", FuiJson.GetDouble(anchor, "right", 0));
-                if (anchor.ContainsKey("top")) AppendPx("top", FuiJson.GetDouble(anchor, "top", 0));
-                if (anchor.ContainsKey("bottom")) AppendPx("bottom", FuiJson.GetDouble(anchor, "bottom", 0));
-                if (anchor.ContainsKey("width") || width > 0) AppendPx("width", FuiJson.GetDouble(anchor, "width", width));
-                if (anchor.ContainsKey("height") || height > 0) AppendPx("height", FuiJson.GetDouble(anchor, "height", height));
+                var hasLeft = anchor.ContainsKey("left");
+                var hasRight = anchor.ContainsKey("right");
+                var hasTop = anchor.ContainsKey("top");
+                var hasBottom = anchor.ContainsKey("bottom");
+                if (hasLeft) AppendPx("left", FuiJson.GetDouble(anchor, "left", 0));
+                if (hasRight) AppendPx("right", FuiJson.GetDouble(anchor, "right", 0));
+                if (hasTop) AppendPx("top", FuiJson.GetDouble(anchor, "top", 0));
+                if (hasBottom) AppendPx("bottom", FuiJson.GetDouble(anchor, "bottom", 0));
+
+                // Some Figma centered elements have a semantic center anchor, but UI Toolkit absolute
+                // positioning still needs explicit local left/top. Without this they snap to 0,0.
+                if (!hasLeft && !hasRight) AppendPx("left", localX);
+                if (!hasTop && !hasBottom) AppendPx("top", localY);
+                if (anchor.ContainsKey("width") || (!hasLeft || !hasRight) || width > 0) AppendPx("width", FuiJson.GetDouble(anchor, "width", width));
+                if (anchor.ContainsKey("height") || (!hasTop || !hasBottom) || height > 0) AppendPx("height", FuiJson.GetDouble(anchor, "height", height));
                 return;
             }
 
             // Figma exports bounds in screen coordinates. UI Toolkit absolute positioning is local to the parent.
-            // If parent layout is absolute/layered, convert screen-space bounds into parent-local left/top.
-            var localX = FuiJson.GetDouble(bounds, "x", 0) - FuiJson.GetDouble(parentBounds, "x", 0);
-            var localY = FuiJson.GetDouble(bounds, "y", 0) - FuiJson.GetDouble(parentBounds, "y", 0);
             AppendPx("left", localX);
             AppendPx("top", localY);
             AppendPx("width", width);
@@ -1402,6 +1433,14 @@ namespace AiMultiToolKit.FuiImporter
             var verticalAlign = FuiJson.GetString(style, "verticalAlign", string.Empty);
             var unityTextAlign = ToUnityTextAlign(textAlign, verticalAlign);
             if (!string.IsNullOrEmpty(unityTextAlign)) _uss.AppendLine("  -unity-text-align: " + unityTextAlign + ";");
+
+            var outlineColor = FuiJson.GetObject(style, "textStrokeColor");
+            var outlineWidth = FuiJson.GetNullableDouble(style, "textStrokeWidth");
+            if (outlineColor != null && outlineWidth.HasValue && outlineWidth.Value > 0)
+            {
+                _uss.AppendLine("  -unity-text-outline-color: " + ColorToCss(outlineColor) + ";");
+                AppendPx("-unity-text-outline-width", outlineWidth.Value);
+            }
 
             var fontStyle = FuiJson.GetString(style, "fontStyle", string.Empty);
             var mapped = ToUnityFontStyle(fontStyle);
@@ -1500,6 +1539,72 @@ namespace AiMultiToolKit.FuiImporter
 
             _uss.AppendLine("  background-image: url(\"project://database/" + CssUrl(AiFuiImporterUtility.NormalizeAssetPath(resolved)) + "\");");
             _uss.AppendLine("  -unity-background-scale-mode: stretch-to-fill;");
+        }
+
+        private static bool IsTextRasterized(Dictionary<string, object> element)
+        {
+            if (element == null) return false;
+            if (FuiJson.GetString(element, "textRenderMode", string.Empty).Equals("image", StringComparison.OrdinalIgnoreCase)) return true;
+            if (FuiJson.GetString(element, "textAsImage", string.Empty).Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
+            var style = FuiJson.GetObject(element, "style");
+            if (style != null)
+            {
+                if (FuiJson.GetString(style, "textRenderMode", string.Empty).Equals("image", StringComparison.OrdinalIgnoreCase)) return true;
+                if (FuiJson.GetString(style, "textRasterized", string.Empty).Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
+        }
+
+        private static bool IsAtomicLayered(Dictionary<string, object> element)
+        {
+            if (element == null) return false;
+            if (FuiJson.GetString(element, "atomicVisualComponent", string.Empty).Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
+            if (FuiJson.GetString(element, "preserveInternalLayers", string.Empty).Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
+            var layout = FuiJson.GetObject(element, "layout");
+            return FuiJson.GetString(layout, "source", string.Empty).Equals("atomic-layered-component", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static IEnumerable<object> OrderChildrenForUxml(Dictionary<string, object> parent, List<object> children, string parentLayoutMode)
+        {
+            if (children == null) yield break;
+            var list = children.Select((item, index) => new { Item = item, Dict = item as Dictionary<string, object>, Index = index }).ToList();
+            var layout = FuiJson.GetObject(parent, "layout");
+            var mode = FuiJson.GetString(layout, "mode", parentLayoutMode ?? "flex");
+            var direction = FuiJson.GetString(layout, "flexDirection", "column").ToLowerInvariant();
+
+            var ordered = list.AsEnumerable();
+            if (mode.Equals("flex", StringComparison.OrdinalIgnoreCase))
+            {
+                ordered = direction == "row"
+                    ? list.OrderBy(x => GetBoundsDouble(x.Dict, "x")).ThenBy(x => GetBoundsDouble(x.Dict, "y")).ThenBy(x => x.Index)
+                    : list.OrderBy(x => GetBoundsDouble(x.Dict, "y")).ThenBy(x => GetBoundsDouble(x.Dict, "x")).ThenBy(x => x.Index);
+            }
+            else if (mode.Equals("absolute", StringComparison.OrdinalIgnoreCase))
+            {
+                // Layered components render background/plates first, then icons/text on top.
+                ordered = list.OrderBy(x => LayerRoleWeight(x.Dict)).ThenBy(x => x.Index);
+            }
+
+            foreach (var item in ordered) yield return item.Item;
+        }
+
+        private static double GetBoundsDouble(Dictionary<string, object> element, string key)
+        {
+            var bounds = FuiJson.GetObject(element, "bounds");
+            return FuiJson.GetDouble(bounds, key, 0);
+        }
+
+        private static int LayerRoleWeight(Dictionary<string, object> element)
+        {
+            if (element == null) return 50;
+            var type = NormalizeType(FuiJson.GetString(element, "elementType", "Panel"));
+            var name = (FuiJson.GetString(element, "name", string.Empty) + " " + FuiJson.GetString(element, "originalName", string.Empty)).ToLowerInvariant();
+            if (name.Contains("background") || name.Contains("bg") || name.Contains("fon") || name.Contains("фон") || name.Contains("plate") || name.Contains("underlay") || name.Contains("mask") || name.Contains("tint") || name.Contains("overlay")) return 10;
+            if (type == "Image") return 20;
+            if (type == "Panel") return 40;
+            if (type == "Button" || type == "CurrencyPanel" || type == "InventorySlot" || type == "ProgressBar") return 50;
+            if (type == "Label" || IsTextRasterized(element)) return 80;
+            return 60;
         }
 
         private static string MapUxmlTag(string type)
