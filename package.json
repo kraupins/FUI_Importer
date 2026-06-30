@@ -1,8 +1,8 @@
 {
   "name": "com.aimultitoolkit.fui-importer",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "displayName": "AI Multi-Tool Kit FUI Импортёр",
-  "description": "Editor-only импортёр .fui файлов из Figma в Unity UI Toolkit для Unity 6.5+. Автоматически создаёт UXML/USS, текстуры, шрифты, PanelSettings, UIDocument-префабы и Unity-сцены.",
+  "description": "Editor-only импортёр .fui файлов из Figma в Unity UI Toolkit для Unity 6.5+. Автоматически создаёт UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, Panel Renderer-префабы и Unity-сцены.",
   "unity": "6000.5",
   "author": {
     "name": "AI Multi-Tool Kit"

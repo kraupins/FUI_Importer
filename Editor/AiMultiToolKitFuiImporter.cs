@@ -68,7 +68,7 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.Space(6);
             EditorGUILayout.LabelField("AI Multi-Tool Kit · FUI → Unity UI Toolkit", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "Импортирует .fui из Figma-плагина и автоматически создаёт готовый Unity UI Toolkit проект: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, UIDocument-префабы и Unity-сцены. " +
+                "Импортирует .fui из Figma-плагина и автоматически создаёт готовый Unity UI Toolkit проект: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, Panel Renderer-префабы и Unity-сцены. " +
                 "После импорта этот пакет можно удалить: созданный UI остаётся на стандартном Unity UI Toolkit.",
                 MessageType.Info);
 
@@ -88,7 +88,7 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.LabelField("Куда импортировать", EditorStyles.boldLabel);
             _outputRoot = EditorGUILayout.TextField("Папка вывода", _outputRoot);
             EditorGUILayout.HelpBox(
-                "Все этапы включены автоматически: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, UIDocument-префабы, Unity-сцены и объект предпросмотра в открытой сцене.",
+                "Все этапы включены автоматически: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, Panel Renderer-префабы и Unity-сцены.",
                 MessageType.None);
 
             EditorGUILayout.Space(10);
@@ -128,11 +128,11 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.Space(12);
             EditorGUILayout.HelpBox(
                 "Что будет создано:\n" +
-                "UI/*.uxml + UI/*.uss — готово для UI Document / UI Builder\n" +
+                "UI/*.uxml + UI/*.uss — готово для UI Builder и Panel Renderer\n" +
                 "Textures/* — картинки, которые подключаются в USS через background-image\n" +
                 "Fonts/* — шрифты из .fui, если они были упакованы\n" +
                 "PanelSettings/* — настройки панели UI Toolkit\n" +
-                "Prefabs/* — готовые UIDocument-префабы\n" +
+                "Prefabs/* — готовые Panel Renderer-префабы\n" +
                 "Scenes/* — готовая сцена со всеми экранами и отдельная сцена на каждый экран\n" +
                 "Source/* — исходные JSON для проверки и отладки",
                 MessageType.None);
@@ -156,7 +156,7 @@ namespace AiMultiToolKit.FuiImporter
                     CreatePanelSettings = true,
                     CreateScreenPrefabs = true,
                     CreateSceneAssets = true,
-                    AddScreensToOpenScene = true,
+                    AddScreensToOpenScene = false,
                     OpenFirstUxmlAfterImport = true
                 };
 
@@ -182,7 +182,7 @@ namespace AiMultiToolKit.FuiImporter
         public bool CreatePanelSettings = true;
         public bool CreateScreenPrefabs = true;
         public bool CreateSceneAssets = true;
-        public bool AddScreensToOpenScene = true;
+        public bool AddScreensToOpenScene = false;
         public bool OpenFirstUxmlAfterImport = true;
     }
 
@@ -264,6 +264,7 @@ namespace AiMultiToolKit.FuiImporter
             WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(sourceRoot, "fonts.json"), package.FontsJson ?? "{}");
 
             var assetPathMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var fontPathMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var file in package.AssetFiles)
             {
                 var relative = AiFuiImporterUtility.TrimPrefix(file.Path, "assets/");
@@ -288,6 +289,8 @@ namespace AiMultiToolKit.FuiImporter
                 if (string.Equals(relative, "fonts.json", StringComparison.OrdinalIgnoreCase)) continue;
                 var target = AiFuiImporterUtility.CombineAssetPath(fontRoot, AiFuiImporterUtility.SanitizeRelativePath(relative, "font.ttf"));
                 WriteBinaryAsset(target, file.Bytes);
+                fontPathMap[AiFuiImporterUtility.NormalizePackagePath(file.Path)] = target;
+                fontPathMap[AiFuiImporterUtility.NormalizePackagePath(relative)] = target;
                 report.CopiedFontCount++;
             }
 
@@ -296,6 +299,7 @@ namespace AiMultiToolKit.FuiImporter
             {
                 foreach (var path in assetPathMap.Values) ApplyUiTextureImportSettings(path);
             }
+            foreach (var path in fontPathMap.Values) ApplyUiFontImportSettings(path);
 
             var usedScreenNames = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (var screen in package.Screens)
@@ -306,7 +310,7 @@ namespace AiMultiToolKit.FuiImporter
                 var uxmlPath = AiFuiImporterUtility.CombineAssetPath(uiRoot, screenName + ".uxml");
                 var sourcePath = AiFuiImporterUtility.CombineAssetPath(sourceRoot, "screen_" + screenName + ".json");
 
-                var generator = new FuiUiToolkitGenerator(screen, ussPath, assetPathMap, report);
+                var generator = new FuiUiToolkitGenerator(screen, ussPath, assetPathMap, fontPathMap, package.FontMetadata, report);
                 var generated = generator.Generate();
 
                 WriteTextAsset(uxmlPath, generated.Uxml);
@@ -416,6 +420,17 @@ namespace AiMultiToolKit.FuiImporter
             importer.SaveAndReimport();
         }
 
+        private static void ApplyUiFontImportSettings(string assetPath)
+        {
+            if (string.IsNullOrEmpty(assetPath)) return;
+            AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceSynchronousImport);
+            var importer = AssetImporter.GetAtPath(assetPath) as TrueTypeFontImporter;
+            if (importer == null) return;
+            importer.includeFontData = true;
+            importer.fontTextureCase = FontTextureCase.Dynamic;
+            importer.SaveAndReimport();
+        }
+
 
         private static PanelSettings CreatePanelSettingsAsset(string outputRoot, string projectName, List<FuiGeneratedScreenAsset> screens, FuiImportReport report)
         {
@@ -473,13 +488,10 @@ namespace AiMultiToolKit.FuiImporter
                 }
 
                 var prefabPath = AiFuiImporterUtility.CombineAssetPath(folder, screen.Name + ".prefab");
-                var go = new GameObject(screen.Name);
+                var go = CreateUiToolkitPanelObject(screen, panelSettings, 0, true, report);
+                if (go == null) continue;
                 try
                 {
-                    var doc = go.AddComponent<UIDocument>();
-                    doc.panelSettings = panelSettings;
-                    doc.visualTreeAsset = visualTree;
-                    doc.sortingOrder = 0;
                     PrefabUtility.SaveAsPrefabAsset(go, prefabPath);
                     if (report != null) report.GeneratedPrefabs.Add(prefabPath);
                 }
@@ -531,7 +543,7 @@ namespace AiMultiToolKit.FuiImporter
 
                 for (var i = 0; i < screens.Count; i++)
                 {
-                    var go = CreateUidocumentObject(screens[i], panelSettings, i, i == 0, report);
+                    var go = CreateUiToolkitPanelObject(screens[i], panelSettings, i, i == 0, report);
                     if (go == null) continue;
                     SceneManager.MoveGameObjectToScene(go, scene);
                     go.transform.SetParent(root.transform, false);
@@ -558,7 +570,7 @@ namespace AiMultiToolKit.FuiImporter
                 scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
                 scene.name = Path.GetFileNameWithoutExtension(sceneAssetPath);
 
-                var go = CreateUidocumentObject(screen, panelSettings, 0, true, report);
+                var go = CreateUiToolkitPanelObject(screen, panelSettings, 0, true, report);
                 if (go != null) SceneManager.MoveGameObjectToScene(go, scene);
 
                 EditorSceneManager.SaveScene(scene, sceneAssetPath);
@@ -574,23 +586,124 @@ namespace AiMultiToolKit.FuiImporter
             }
         }
 
-        private static GameObject CreateUidocumentObject(FuiGeneratedScreenAsset screen, PanelSettings panelSettings, int sortingOrder, bool active, FuiImportReport report)
+        private static GameObject CreateUiToolkitPanelObject(FuiGeneratedScreenAsset screen, PanelSettings panelSettings, int sortingOrder, bool active, FuiImportReport report)
         {
             if (screen == null) return null;
             var visualTree = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(screen.UxmlPath);
             if (visualTree == null)
             {
-                AddReportWarning(report, "Не удалось создать UIDocument. Не найден UXML: " + screen.UxmlPath);
+                AddReportWarning(report, "Не удалось создать Panel Renderer. Не найден UXML: " + screen.UxmlPath);
                 return null;
             }
 
             var go = new GameObject(screen.Name);
-            var doc = go.AddComponent<UIDocument>();
-            doc.panelSettings = panelSettings;
-            doc.visualTreeAsset = visualTree;
-            doc.sortingOrder = sortingOrder;
+            var panelRendererType = FindPanelRendererType();
+            if (panelRendererType != null)
+            {
+                var renderer = go.AddComponent(panelRendererType);
+                var sourceAssigned = AssignPanelRenderer(renderer, visualTree, panelSettings, sortingOrder);
+                if (!sourceAssigned)
+                    AddReportWarning(report, "Panel Renderer создан, но не удалось назначить UXML через reflection. Проверь Inspector: " + screen.UxmlPath);
+            }
+            else
+            {
+                AddReportWarning(report, "Panel Renderer не найден в этой версии Unity. Использован UIDocument fallback.");
+                var doc = go.AddComponent<UIDocument>();
+                doc.panelSettings = panelSettings;
+                doc.visualTreeAsset = visualTree;
+                doc.sortingOrder = sortingOrder;
+            }
+
             go.SetActive(active);
             return go;
+        }
+
+        private static Type FindPanelRendererType()
+        {
+            var direct = Type.GetType("UnityEngine.UIElements.PanelRenderer, UnityEngine.UIElementsModule");
+            if (direct != null) return direct;
+            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
+            foreach (var asm in assemblies)
+            {
+                try
+                {
+                    var type = asm.GetType("UnityEngine.UIElements.PanelRenderer");
+                    if (type != null) return type;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        private static bool AssignPanelRenderer(Component renderer, VisualTreeAsset visualTree, PanelSettings panelSettings, int sortingOrder)
+        {
+            if (renderer == null) return false;
+            var assignedSource = false;
+            assignedSource |= TrySetMember(renderer, "visualTreeAsset", visualTree);
+            assignedSource |= TrySetMember(renderer, "sourceAsset", visualTree);
+            assignedSource |= TrySetMember(renderer, "source", visualTree);
+            assignedSource |= TrySetMember(renderer, "uxml", visualTree);
+            TrySetMember(renderer, "panelSettings", panelSettings);
+            TrySetMember(renderer, "sortingOrder", sortingOrder);
+            TrySetMember(renderer, "sortOrder", sortingOrder);
+
+            var so = new SerializedObject(renderer);
+            assignedSource |= TrySetSerializedObjectReference(so, "m_VisualTreeAsset", visualTree);
+            assignedSource |= TrySetSerializedObjectReference(so, "m_SourceAsset", visualTree);
+            assignedSource |= TrySetSerializedObjectReference(so, "m_Source", visualTree);
+            assignedSource |= TrySetSerializedObjectReference(so, "m_Uxml", visualTree);
+            TrySetSerializedObjectReference(so, "m_PanelSettings", panelSettings);
+            TrySetSerializedInt(so, "m_SortingOrder", sortingOrder);
+            TrySetSerializedInt(so, "m_SortOrder", sortingOrder);
+            so.ApplyModifiedPropertiesWithoutUndo();
+            EditorUtility.SetDirty(renderer);
+            return assignedSource;
+        }
+
+        private static bool TrySetMember(Component target, string memberName, object value)
+        {
+            if (target == null || string.IsNullOrEmpty(memberName)) return false;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+            var type = target.GetType();
+            try
+            {
+                var prop = type.GetProperty(memberName, flags);
+                if (prop != null && prop.CanWrite && value != null && prop.PropertyType.IsAssignableFrom(value.GetType()))
+                {
+                    prop.SetValue(target, value, null);
+                    return true;
+                }
+            }
+            catch { }
+            try
+            {
+                var field = type.GetField(memberName, flags);
+                if (field != null && value != null && field.FieldType.IsAssignableFrom(value.GetType()))
+                {
+                    field.SetValue(target, value);
+                    return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static bool TrySetSerializedObjectReference(SerializedObject so, string propertyName, UnityEngine.Object value)
+        {
+            if (so == null || string.IsNullOrEmpty(propertyName)) return false;
+            var prop = so.FindProperty(propertyName);
+            if (prop == null || prop.propertyType != SerializedPropertyType.ObjectReference) return false;
+            prop.objectReferenceValue = value;
+            return true;
+        }
+
+        private static bool TrySetSerializedInt(SerializedObject so, string propertyName, int value)
+        {
+            if (so == null || string.IsNullOrEmpty(propertyName)) return false;
+            var prop = so.FindProperty(propertyName);
+            if (prop == null) return false;
+            if (prop.propertyType == SerializedPropertyType.Integer) { prop.intValue = value; return true; }
+            return false;
         }
 
         private static void CreateSceneObjects(string projectName, List<FuiGeneratedScreenAsset> screens, PanelSettings panelSettings, FuiImportReport report)
@@ -610,7 +723,7 @@ namespace AiMultiToolKit.FuiImporter
             var index = 0;
             foreach (var screen in screens)
             {
-                var go = CreateUidocumentObject(screen, panelSettings, index, index == 0, report);
+                var go = CreateUiToolkitPanelObject(screen, panelSettings, index, index == 0, report);
                 if (go == null) continue;
                 go.transform.SetParent(root.transform, false);
                 index++;
@@ -660,6 +773,7 @@ namespace AiMultiToolKit.FuiImporter
         public readonly List<FuiZipFile> AssetFiles = new List<FuiZipFile>();
         public readonly List<FuiZipFile> FontFiles = new List<FuiZipFile>();
         public readonly List<FuiAssetMeta> AssetMetadata = new List<FuiAssetMeta>();
+        public readonly List<FuiFontMeta> FontMetadata = new List<FuiFontMeta>();
 
         public static FuiPackage Read(string fuiFilePath)
         {
@@ -729,6 +843,7 @@ namespace AiMultiToolKit.FuiImporter
                 }
             }
 
+            package.FontMetadata.AddRange(ParseFontMetadata(package.FontsJson));
             if (package.Screens.Count == 0) throw new InvalidDataException("В FUI пакете не найдены screens/*.json.");
             return package;
         }
@@ -774,6 +889,69 @@ namespace AiMultiToolKit.FuiImporter
                     Path = FuiJson.GetString(dict, "path", string.Empty)
                 };
             }
+        }
+
+        private static IEnumerable<FuiFontMeta> ParseFontMetadata(string json)
+        {
+            var root = FuiJson.Deserialize(string.IsNullOrEmpty(json) ? "{}" : json) as Dictionary<string, object>;
+            if (root == null) yield break;
+
+            var uploaded = FuiJson.GetArray(root, "uploadedFonts");
+            var figmaFonts = FuiJson.GetArray(root, "figmaFonts");
+            var uploadedList = new List<FuiFontMeta>();
+            if (uploaded != null)
+            {
+                foreach (var item in uploaded)
+                {
+                    var dict = item as Dictionary<string, object>;
+                    if (dict == null) continue;
+                    var meta = new FuiFontMeta
+                    {
+                        FileName = FuiJson.GetString(dict, "fileName", string.Empty),
+                        Path = FuiJson.GetString(dict, "path", string.Empty)
+                    };
+                    uploadedList.Add(meta);
+                    yield return meta;
+                }
+            }
+
+            if (figmaFonts != null)
+            {
+                foreach (var item in figmaFonts)
+                {
+                    var dict = item as Dictionary<string, object>;
+                    if (dict == null) continue;
+                    var family = FuiJson.GetString(dict, "family", string.Empty);
+                    var style = FuiJson.GetString(dict, "style", string.Empty);
+                    if (string.IsNullOrEmpty(family)) continue;
+                    var bestUpload = PickBestUploadedFont(uploadedList, family, style);
+                    yield return new FuiFontMeta
+                    {
+                        Family = family,
+                        Style = string.IsNullOrEmpty(style) ? "Regular" : style,
+                        FileName = bestUpload != null ? bestUpload.FileName : string.Empty,
+                        Path = bestUpload != null ? bestUpload.Path : string.Empty
+                    };
+                }
+            }
+        }
+
+        private static FuiFontMeta PickBestUploadedFont(List<FuiFontMeta> uploaded, string family, string style)
+        {
+            if (uploaded == null || uploaded.Count == 0) return null;
+            var familyKey = AiFuiImporterUtility.Slug(family);
+            var styleKey = AiFuiImporterUtility.Slug(style);
+            FuiFontMeta fallback = uploaded[0];
+            foreach (var f in uploaded)
+            {
+                var nameKey = AiFuiImporterUtility.Slug((f.FileName ?? string.Empty) + " " + (f.Path ?? string.Empty));
+                if (!string.IsNullOrEmpty(familyKey) && nameKey.Contains(familyKey))
+                {
+                    if (string.IsNullOrEmpty(styleKey) || nameKey.Contains(styleKey)) return f;
+                    fallback = f;
+                }
+            }
+            return fallback;
         }
     }
 
@@ -869,6 +1047,14 @@ namespace AiMultiToolKit.FuiImporter
         public string Path;
     }
 
+    internal sealed class FuiFontMeta
+    {
+        public string Family;
+        public string Style;
+        public string FileName;
+        public string Path;
+    }
+
     internal sealed class FuiZipFile
     {
         public readonly string Path;
@@ -900,16 +1086,20 @@ namespace AiMultiToolKit.FuiImporter
         private readonly Dictionary<string, object> _screen;
         private readonly string _ussAssetPath;
         private readonly Dictionary<string, string> _assetPathMap;
+        private readonly Dictionary<string, string> _fontPathMap;
+        private readonly List<FuiFontMeta> _fontMetadata;
         private readonly FuiImportReport _report;
         private readonly StringBuilder _uss = new StringBuilder();
         private int _elementSeq;
         private string _screenClass;
 
-        public FuiUiToolkitGenerator(Dictionary<string, object> screen, string ussAssetPath, Dictionary<string, string> assetPathMap, FuiImportReport report)
+        public FuiUiToolkitGenerator(Dictionary<string, object> screen, string ussAssetPath, Dictionary<string, string> assetPathMap, Dictionary<string, string> fontPathMap, List<FuiFontMeta> fontMetadata, FuiImportReport report)
         {
             _screen = screen;
             _ussAssetPath = ussAssetPath;
             _assetPathMap = assetPathMap ?? new Dictionary<string, string>();
+            _fontPathMap = fontPathMap ?? new Dictionary<string, string>();
+            _fontMetadata = fontMetadata ?? new List<FuiFontMeta>();
             _report = report;
         }
 
@@ -922,20 +1112,30 @@ namespace AiMultiToolKit.FuiImporter
 
             _uss.AppendLine("/* Auto-generated by AI Multi-Tool Kit FUI Importer. */");
             _uss.AppendLine("/* Safe to keep after deleting the importer. Uses standard Unity UI Toolkit USS only. */");
+            var rootBounds = FuiJson.GetObject(root, "bounds");
+            var screenWidth = FuiJson.GetDouble(rootBounds, "width", FuiJson.GetDouble(_screen, "width", 0));
+            var screenHeight = FuiJson.GetDouble(rootBounds, "height", FuiJson.GetDouble(_screen, "height", 0));
+
             _uss.AppendLine("." + _screenClass + " {");
-            _uss.AppendLine("  width: 100%;");
-            _uss.AppendLine("  height: 100%;");
-            _uss.AppendLine("  flex-grow: 1;");
+            if (screenWidth > 0) _uss.AppendLine("  width: " + Num(screenWidth) + "px;"); else _uss.AppendLine("  width: 100%;");
+            if (screenHeight > 0) _uss.AppendLine("  height: " + Num(screenHeight) + "px;"); else _uss.AppendLine("  height: 100%;");
+            if (screenWidth > 0) _uss.AppendLine("  min-width: " + Num(screenWidth) + "px;");
+            if (screenHeight > 0) _uss.AppendLine("  min-height: " + Num(screenHeight) + "px;");
+            _uss.AppendLine("  flex-grow: 0;");
+            _uss.AppendLine("  flex-shrink: 0;");
             _uss.AppendLine("  position: relative;");
             _uss.AppendLine("  overflow: hidden;");
             _uss.AppendLine("}");
             _uss.AppendLine();
             _uss.AppendLine(".fui_element {");
             _uss.AppendLine("  overflow: hidden;");
+            _uss.AppendLine("  box-sizing: border-box;");
             _uss.AppendLine("}");
             _uss.AppendLine();
             _uss.AppendLine(".fui_type_label {");
             _uss.AppendLine("  white-space: normal;");
+            _uss.AppendLine("  overflow: visible;");
+            _uss.AppendLine("  flex-shrink: 0;");
             _uss.AppendLine("}");
             _uss.AppendLine();
             _uss.AppendLine(".fui_button {");
@@ -955,7 +1155,7 @@ namespace AiMultiToolKit.FuiImporter
             _uss.AppendLine("}");
             _uss.AppendLine();
 
-            var rootXml = BuildElementXml(root, 1, true, "root");
+            var rootXml = BuildElementXml(root, 1, true, "root", null);
             var uxml = new StringBuilder();
             uxml.AppendLine("<ui:UXML xmlns:ui=\"UnityEngine.UIElements\" editor-extension-mode=\"False\">");
             uxml.AppendLine("    <Style src=\"project://database/" + XmlEscape(AiFuiImporterUtility.NormalizeAssetPath(_ussAssetPath)) + "\" />");
@@ -965,7 +1165,7 @@ namespace AiMultiToolKit.FuiImporter
             return new FuiGeneratedScreen { Uxml = uxml.ToString(), Uss = _uss.ToString() };
         }
 
-        private string BuildElementXml(Dictionary<string, object> element, int indent, bool isRoot, string parentLayoutMode)
+        private string BuildElementXml(Dictionary<string, object> element, int indent, bool isRoot, string parentLayoutMode, Dictionary<string, object> parentBounds)
         {
             var rawType = NormalizeType(FuiJson.GetString(element, "elementType", "Panel"));
             var childList = FuiJson.GetArray(element, "children");
@@ -987,7 +1187,7 @@ namespace AiMultiToolKit.FuiImporter
             if (type == "Button") classes.Add("fui_button");
             if (isRoot) classes.Add(_screenClass);
 
-            AppendStyle(element, className, type, isRoot, parentLayoutMode);
+            AppendStyle(element, className, type, isRoot, parentLayoutMode, parentBounds);
 
             var canHaveChildren = CanHaveChildren(type);
             var pad = new string(' ', indent * 4);
@@ -1025,13 +1225,13 @@ namespace AiMultiToolKit.FuiImporter
             foreach (var child in childList)
             {
                 var childDict = child as Dictionary<string, object>;
-                if (childDict != null) sb.Append(BuildElementXml(childDict, indent + 1, false, ownLayoutMode));
+                if (childDict != null) sb.Append(BuildElementXml(childDict, indent + 1, false, ownLayoutMode, FuiJson.GetObject(element, "bounds")));
             }
             sb.Append(pad).Append("</").Append(tag).AppendLine(">");
             return sb.ToString();
         }
 
-        private void AppendStyle(Dictionary<string, object> element, string className, string type, bool isRoot, string parentLayoutMode)
+        private void AppendStyle(Dictionary<string, object> element, string className, string type, bool isRoot, string parentLayoutMode, Dictionary<string, object> parentBounds)
         {
             var bounds = FuiJson.GetObject(element, "bounds");
             var layout = FuiJson.GetObject(element, "layout");
@@ -1048,14 +1248,16 @@ namespace AiMultiToolKit.FuiImporter
 
             if (isRoot)
             {
-                _uss.AppendLine("  width: 100%;");
-                _uss.AppendLine("  height: 100%;");
+                if (width > 0) AppendPx("width", width); else _uss.AppendLine("  width: 100%;");
+                if (height > 0) AppendPx("height", height); else _uss.AppendLine("  height: 100%;");
+                _uss.AppendLine("  flex-grow: 0;");
+                _uss.AppendLine("  flex-shrink: 0;");
                 _uss.AppendLine("  position: relative;");
             }
             else if (forceAbsolute)
             {
                 _uss.AppendLine("  position: absolute;");
-                AppendAbsoluteAnchor(anchor, width, height);
+                AppendAbsoluteAnchor(anchor, bounds, parentBounds, width, height);
             }
             else
             {
@@ -1088,33 +1290,37 @@ namespace AiMultiToolKit.FuiImporter
             _uss.AppendLine();
         }
 
-        private void AppendAbsoluteAnchor(Dictionary<string, object> anchor, double width, double height)
+        private void AppendAbsoluteAnchor(Dictionary<string, object> anchor, Dictionary<string, object> bounds, Dictionary<string, object> parentBounds, double width, double height)
         {
-            if (anchor == null)
+            if (anchor != null)
             {
-                AppendPx("left", 0);
-                AppendPx("top", 0);
-                AppendPx("width", width);
-                AppendPx("height", height);
+                var scenario = FuiJson.GetString(anchor, "scenario", string.Empty);
+                if (scenario == "A_FULL_STRETCH_BACKGROUND")
+                {
+                    _uss.AppendLine("  left: 0;");
+                    _uss.AppendLine("  right: 0;");
+                    _uss.AppendLine("  top: 0;");
+                    _uss.AppendLine("  bottom: 0;");
+                    return;
+                }
+
+                if (anchor.ContainsKey("left")) AppendPx("left", FuiJson.GetDouble(anchor, "left", 0));
+                if (anchor.ContainsKey("right")) AppendPx("right", FuiJson.GetDouble(anchor, "right", 0));
+                if (anchor.ContainsKey("top")) AppendPx("top", FuiJson.GetDouble(anchor, "top", 0));
+                if (anchor.ContainsKey("bottom")) AppendPx("bottom", FuiJson.GetDouble(anchor, "bottom", 0));
+                if (anchor.ContainsKey("width") || width > 0) AppendPx("width", FuiJson.GetDouble(anchor, "width", width));
+                if (anchor.ContainsKey("height") || height > 0) AppendPx("height", FuiJson.GetDouble(anchor, "height", height));
                 return;
             }
 
-            var scenario = FuiJson.GetString(anchor, "scenario", string.Empty);
-            if (scenario == "A_FULL_STRETCH_BACKGROUND")
-            {
-                _uss.AppendLine("  left: 0;");
-                _uss.AppendLine("  right: 0;");
-                _uss.AppendLine("  top: 0;");
-                _uss.AppendLine("  bottom: 0;");
-                return;
-            }
-
-            if (anchor.ContainsKey("left")) AppendPx("left", FuiJson.GetDouble(anchor, "left", 0));
-            if (anchor.ContainsKey("right")) AppendPx("right", FuiJson.GetDouble(anchor, "right", 0));
-            if (anchor.ContainsKey("top")) AppendPx("top", FuiJson.GetDouble(anchor, "top", 0));
-            if (anchor.ContainsKey("bottom")) AppendPx("bottom", FuiJson.GetDouble(anchor, "bottom", 0));
-            AppendPx("width", FuiJson.GetDouble(anchor, "width", width));
-            AppendPx("height", FuiJson.GetDouble(anchor, "height", height));
+            // Figma exports bounds in screen coordinates. UI Toolkit absolute positioning is local to the parent.
+            // If parent layout is absolute/layered, convert screen-space bounds into parent-local left/top.
+            var localX = FuiJson.GetDouble(bounds, "x", 0) - FuiJson.GetDouble(parentBounds, "x", 0);
+            var localY = FuiJson.GetDouble(bounds, "y", 0) - FuiJson.GetDouble(parentBounds, "y", 0);
+            AppendPx("left", localX);
+            AppendPx("top", localY);
+            AppendPx("width", width);
+            AppendPx("height", height);
         }
 
         private void AppendLayout(Dictionary<string, object> layout)
@@ -1184,6 +1390,14 @@ namespace AiMultiToolKit.FuiImporter
             var fontSize = FuiJson.GetNullableDouble(style, "fontSize");
             if (fontSize.HasValue && fontSize.Value > 0) AppendPx("font-size", fontSize.Value);
 
+            var lineHeight = FuiJson.GetObject(style, "lineHeight");
+            var lineHeightPx = ResolveLineHeightPx(lineHeight, fontSize.HasValue ? fontSize.Value : 0);
+            if (lineHeightPx > 0) AppendPx("line-height", lineHeightPx);
+
+            var letterSpacing = FuiJson.GetObject(style, "letterSpacing");
+            var letterSpacingPx = ResolveLetterSpacingPx(letterSpacing, fontSize.HasValue ? fontSize.Value : 0);
+            if (Math.Abs(letterSpacingPx) > 0.001) AppendPx("letter-spacing", letterSpacingPx);
+
             var textAlign = FuiJson.GetString(style, "textAlign", string.Empty);
             var verticalAlign = FuiJson.GetString(style, "verticalAlign", string.Empty);
             var unityTextAlign = ToUnityTextAlign(textAlign, verticalAlign);
@@ -1196,8 +1410,78 @@ namespace AiMultiToolKit.FuiImporter
             var family = FuiJson.GetString(style, "fontFamily", string.Empty);
             if (!string.IsNullOrEmpty(family))
             {
-                _uss.AppendLine("  /* Figma font family: " + CssComment(family) + ". Font files are copied to Fonts/ when present; create/assign Unity Font Assets if your project needs exact font binding. */");
+                var fontAssetPath = ResolveFontAssetPath(family, fontStyle);
+                if (!string.IsNullOrEmpty(fontAssetPath))
+                {
+                    _uss.AppendLine("  -unity-font: url(\"project://database/" + CssUrl(AiFuiImporterUtility.NormalizeAssetPath(fontAssetPath)) + "\");");
+                    _uss.AppendLine("  font-family: \"" + CssString(family) + "\";");
+                }
+                else
+                {
+                    _uss.AppendLine("  /* Figma font family: " + CssComment(family) + ". Font file was not found in this FUI package. */");
+                }
             }
+        }
+
+        private string ResolveFontAssetPath(string family, string style)
+        {
+            if (_fontMetadata == null || _fontMetadata.Count == 0 || _fontPathMap == null || _fontPathMap.Count == 0) return string.Empty;
+            var familyKey = AiFuiImporterUtility.Slug(family);
+            var styleKey = AiFuiImporterUtility.Slug(style);
+            string fallback = string.Empty;
+            foreach (var meta in _fontMetadata)
+            {
+                if (meta == null) continue;
+                var metaFamilyKey = AiFuiImporterUtility.Slug(meta.Family);
+                var metaStyleKey = AiFuiImporterUtility.Slug(meta.Style);
+                var metaNameKey = AiFuiImporterUtility.Slug((meta.FileName ?? string.Empty) + " " + (meta.Path ?? string.Empty));
+                var familyMatches = !string.IsNullOrEmpty(familyKey) && (metaFamilyKey == familyKey || metaNameKey.Contains(familyKey));
+                if (!familyMatches && string.IsNullOrEmpty(fallback)) fallback = ResolveFontMetaPath(meta);
+                if (!familyMatches) continue;
+                var resolved = ResolveFontMetaPath(meta);
+                if (string.IsNullOrEmpty(resolved)) continue;
+                if (string.IsNullOrEmpty(fallback)) fallback = resolved;
+                if (string.IsNullOrEmpty(styleKey) || metaStyleKey == styleKey || metaNameKey.Contains(styleKey)) return resolved;
+            }
+            if (!string.IsNullOrEmpty(fallback)) return fallback;
+            foreach (var kv in _fontPathMap) return kv.Value;
+            return string.Empty;
+        }
+
+        private string ResolveFontMetaPath(FuiFontMeta meta)
+        {
+            if (meta == null) return string.Empty;
+            string resolved;
+            if (!string.IsNullOrEmpty(meta.Path) && _fontPathMap.TryGetValue(AiFuiImporterUtility.NormalizePackagePath(meta.Path), out resolved)) return resolved;
+            if (!string.IsNullOrEmpty(meta.FileName) && _fontPathMap.TryGetValue(AiFuiImporterUtility.NormalizePackagePath(meta.FileName), out resolved)) return resolved;
+            if (!string.IsNullOrEmpty(meta.FileName))
+            {
+                foreach (var kv in _fontPathMap)
+                {
+                    if (kv.Key.EndsWith("/" + meta.FileName, StringComparison.OrdinalIgnoreCase) || string.Equals(Path.GetFileName(kv.Key), meta.FileName, StringComparison.OrdinalIgnoreCase)) return kv.Value;
+                }
+            }
+            return string.Empty;
+        }
+
+        private static double ResolveLineHeightPx(Dictionary<string, object> lineHeight, double fontSize)
+        {
+            if (lineHeight == null) return 0;
+            var unit = FuiJson.GetString(lineHeight, "unit", string.Empty).ToUpperInvariant();
+            var value = FuiJson.GetDouble(lineHeight, "value", 0);
+            if (unit == "PIXELS") return value;
+            if (unit == "PERCENT" && fontSize > 0) return value / 100.0 * fontSize;
+            return 0;
+        }
+
+        private static double ResolveLetterSpacingPx(Dictionary<string, object> letterSpacing, double fontSize)
+        {
+            if (letterSpacing == null) return 0;
+            var unit = FuiJson.GetString(letterSpacing, "unit", string.Empty).ToUpperInvariant();
+            var value = FuiJson.GetDouble(letterSpacing, "value", 0);
+            if (unit == "PIXELS") return value;
+            if (unit == "PERCENT" && fontSize > 0) return value / 100.0 * fontSize;
+            return 0;
         }
 
         private void AppendAssetBackground(Dictionary<string, object> assetRef)
@@ -1362,6 +1646,11 @@ namespace AiMultiToolKit.FuiImporter
         {
             return (value ?? string.Empty).Replace("*/", "* /");
         }
+
+        private static string CssString(string value)
+        {
+            return (value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
     }
 
     internal static class AiFuiImporterUtility
@@ -1438,6 +1727,17 @@ namespace AiMultiToolKit.FuiImporter
             count++;
             used[baseName] = count;
             return baseName + "_" + count.ToString(CultureInfo.InvariantCulture);
+        }
+
+        public static string Slug(string value)
+        {
+            value = (value ?? string.Empty).ToLowerInvariant();
+            var sb = new StringBuilder();
+            foreach (var ch in value)
+            {
+                if (char.IsLetterOrDigit(ch)) sb.Append(ch);
+            }
+            return sb.ToString();
         }
 
         public static string SanitizeFileName(string value, string fallback)

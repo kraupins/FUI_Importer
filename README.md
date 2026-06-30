@@ -39,14 +39,14 @@ Assets/FUI_Imported/<ProjectName>/
   UI/             UXML + USS, можно открывать в UI Builder
   Textures/       PNG/JPG ассеты
   Fonts/          шрифты из FUI
-  PanelSettings/  PanelSettings для UIDocument
-  Prefabs/        UIDocument-префабы
+  PanelSettings/  PanelSettings для Panel Renderer
+  Prefabs/        Panel Renderer-префабы
   Scenes/         общая сцена + отдельная сцена на каждый экран
   Source/         исходные JSON из FUI
 ```
 
-Также создаётся объект предпросмотра в текущей открытой сцене.
+Текущая открытая сцена не засоряется: импортёр создаёт отдельные scene assets в папке `Scenes/`.
 
 ## После импорта
 
-Пакет можно удалить. Сгенерированный UI остаётся рабочим, потому что использует стандартные Unity assets: `.uxml`, `.uss`, текстуры, `PanelSettings`, `UIDocument`, prefab и scene assets.
+Пакет можно удалить. Сгенерированный UI остаётся рабочим, потому что использует стандартные Unity assets: `.uxml`, `.uss`, текстуры, `PanelSettings`, `Panel Renderer`, prefab и scene assets.
