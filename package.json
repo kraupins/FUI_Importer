@@ -1,0 +1,18 @@
+{
+  "name": "com.aimultitoolkit.fui-importer",
+  "version": "1.0.0",
+  "displayName": "AI Multi-Tool Kit FUI Importer",
+  "description": "Editor-only importer for AI Multi-Tool Kit .fui packages exported from Figma. Generates Unity UI Toolkit UXML/USS, textures, fonts, PanelSettings, UIDocument prefabs, and optional scene objects.",
+  "unity": "2022.3",
+  "author": {
+    "name": "AI Multi-Tool Kit"
+  },
+  "keywords": [
+    "figma",
+    "fui",
+    "ui-toolkit",
+    "uxml",
+    "uss"
+  ],
+  "type": "tool"
+}
