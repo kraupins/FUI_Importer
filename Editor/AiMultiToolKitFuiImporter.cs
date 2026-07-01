@@ -1201,6 +1201,8 @@ namespace AiMultiToolKit.FuiImporter
             if (rawType == "Label" && textAsImage) type = "Image";
             else if (rawType == "Label" && childList != null && childList.Count > 0 && string.IsNullOrWhiteSpace(ownText))
                 type = "Panel";
+            else if (rawType == "ProgressBar" && childList != null && childList.Count > 0)
+                type = "Panel"; // custom progress bar from Figma: back/fill images must stay editable in UI Builder
 
             var tag = MapUxmlTag(type);
             var rawName = FuiJson.GetString(element, "name", type);
@@ -1209,6 +1211,7 @@ namespace AiMultiToolKit.FuiImporter
             var classes = new List<string> { "fui_element", className, "fui_type_" + rawType.ToLowerInvariant() };
             if (type != rawType) classes.Add("fui_as_" + type.ToLowerInvariant());
             if (type == "Button") classes.Add("fui_button");
+            if (rawType == "ProgressBar") classes.Add("fui_progressbar");
             if (textAsImage) classes.Add("fui_text_image");
             if (IsAtomicLayered(element)) classes.Add("fui_layered");
             if (isRoot) classes.Add(_screenClass);
