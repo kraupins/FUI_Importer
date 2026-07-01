@@ -300,7 +300,10 @@ namespace AiMultiToolKit.FuiImporter
             {
                 foreach (var path in assetPathMap.Values) ApplyUiTextureImportSettings(path);
             }
-            foreach (var path in fontPathMap.Values) ApplyUiFontImportSettings(path);
+            foreach (var path in fontPathMap.Values.Distinct(StringComparer.OrdinalIgnoreCase)) ApplyUiFontImportSettings(path);
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            ReplaceFontFilesWithSdfFontAssets(fontPathMap, outputRoot, report);
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
 
             var usedScreenNames = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (var screen in package.Screens)
@@ -311,7 +314,9 @@ namespace AiMultiToolKit.FuiImporter
                 var uxmlPath = AiFuiImporterUtility.CombineAssetPath(uiRoot, screenName + ".uxml");
                 var sourcePath = AiFuiImporterUtility.CombineAssetPath(sourceRoot, "screen_" + screenName + ".json");
 
-                var generator = new FuiUiToolkitGenerator(screen, ussPath, assetPathMap, fontPathMap, package.FontMetadata, AiFuiImporterUtility.CombineAssetPath(outputRoot, "TextGradients"), report);
+                var textGradientFolder = AiFuiImporterUtility.CombineAssetPath(AiFuiImporterUtility.CombineAssetPath(outputRoot, "Resources"), "Text Color Gradients");
+                AiFuiImporterUtility.EnsureAssetFolder(textGradientFolder);
+                var generator = new FuiUiToolkitGenerator(screen, ussPath, assetPathMap, fontPathMap, package.FontMetadata, textGradientFolder, report);
                 var generated = generator.Generate();
 
                 WriteTextAsset(uxmlPath, generated.Uxml);
@@ -430,6 +435,78 @@ namespace AiMultiToolKit.FuiImporter
             importer.includeFontData = true;
             importer.fontTextureCase = FontTextureCase.Dynamic;
             importer.SaveAndReimport();
+        }
+
+        private static void ReplaceFontFilesWithSdfFontAssets(Dictionary<string, string> fontPathMap, string outputRoot, FuiImportReport report)
+        {
+            if (fontPathMap == null || fontPathMap.Count == 0) return;
+            var replacements = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var path in fontPathMap.Values.Distinct(StringComparer.OrdinalIgnoreCase).ToList())
+            {
+                var sdf = CreateSdfFontAsset(path, outputRoot, report);
+                if (!string.IsNullOrEmpty(sdf)) replacements[path] = sdf;
+            }
+            if (replacements.Count == 0) return;
+            var keys = fontPathMap.Keys.ToList();
+            foreach (var key in keys)
+            {
+                var value = fontPathMap[key];
+                string sdf;
+                if (replacements.TryGetValue(value, out sdf)) fontPathMap[key] = sdf;
+            }
+        }
+
+        private static string CreateSdfFontAsset(string fontPath, string outputRoot, FuiImportReport report)
+        {
+            try
+            {
+                var font = AssetDatabase.LoadAssetAtPath<Font>(fontPath);
+                if (font == null) return string.Empty;
+                var fontAssetType = Type.GetType("UnityEngine.TextCore.Text.FontAsset, UnityEngine.TextCoreTextEngineModule")
+                    ?? Type.GetType("UnityEngine.TextCore.Text.FontAsset, UnityEngine.TextCoreFontEngineModule")
+                    ?? AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType("UnityEngine.TextCore.Text.FontAsset")).FirstOrDefault(t => t != null);
+                if (fontAssetType == null) return string.Empty;
+                var method = fontAssetType.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+                    .FirstOrDefault(m => m.Name == "CreateFontAsset" && m.GetParameters().Length >= 1 && m.GetParameters()[0].ParameterType == typeof(Font));
+                if (method == null) return string.Empty;
+
+                var folder = AiFuiImporterUtility.CombineAssetPath(AiFuiImporterUtility.CombineAssetPath(outputRoot, "Resources"), "Fonts & Materials");
+                AiFuiImporterUtility.EnsureAssetFolder(folder);
+                var assetName = AiFuiImporterUtility.SanitizeFileName(Path.GetFileNameWithoutExtension(fontPath) + " SDF", "FUI_Font_SDF");
+                var assetPath = AiFuiImporterUtility.CombineAssetPath(folder, assetName + ".asset");
+                var existing = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(assetPath);
+                if (existing != null) return assetPath;
+
+                object created;
+                var parameters = method.GetParameters();
+                if (parameters.Length == 1) created = method.Invoke(null, new object[] { font });
+                else
+                {
+                    var args = new object[parameters.Length];
+                    args[0] = font;
+                    for (var i = 1; i < args.Length; i++) args[i] = parameters[i].HasDefaultValue ? parameters[i].DefaultValue : GetDefaultValue(parameters[i].ParameterType);
+                    created = method.Invoke(null, args);
+                }
+                var obj = created as UnityEngine.Object;
+                if (obj == null) return string.Empty;
+                AssetDatabase.CreateAsset(obj, assetPath);
+                EditorUtility.SetDirty(obj);
+                return assetPath;
+            }
+            catch (Exception ex)
+            {
+                if (report != null)
+                {
+                    report.WarningCount++;
+                    report.Warnings.Add("Не удалось создать SDF Font Asset для " + fontPath + ": " + ex.Message);
+                }
+                return string.Empty;
+            }
+        }
+
+        private static object GetDefaultValue(Type type)
+        {
+            return type != null && type.IsValueType ? Activator.CreateInstance(type) : null;
         }
 
 
@@ -1133,8 +1210,17 @@ namespace AiMultiToolKit.FuiImporter
             _uss.AppendLine("/* Auto-generated by AI Multi-Tool Kit FUI Importer. */");
             _uss.AppendLine("/* Safe to keep after deleting the importer. Uses standard Unity UI Toolkit USS only. */");
             var rootBounds = FuiJson.GetObject(root, "bounds");
-            var screenWidth = FuiJson.GetDouble(rootBounds, "width", FuiJson.GetDouble(_screen, "width", 0));
-            var screenHeight = FuiJson.GetDouble(rootBounds, "height", FuiJson.GetDouble(_screen, "height", 0));
+            var screenWidth = FuiJson.GetDouble(_screen, "width", 0);
+            var screenHeight = FuiJson.GetDouble(_screen, "height", 0);
+            if (screenWidth <= 0) screenWidth = FuiJson.GetDouble(rootBounds, "width", 0);
+            if (screenHeight <= 0) screenHeight = FuiJson.GetDouble(rootBounds, "height", 0);
+            if (rootBounds != null)
+            {
+                rootBounds["width"] = screenWidth;
+                rootBounds["height"] = screenHeight;
+                if (!rootBounds.ContainsKey("x")) rootBounds["x"] = 0;
+                if (!rootBounds.ContainsKey("y")) rootBounds["y"] = 0;
+            }
 
             _uss.AppendLine("." + _screenClass + " {");
             if (screenWidth > 0) _uss.AppendLine("  width: " + Num(screenWidth) + "px;"); else _uss.AppendLine("  width: 100%;");
@@ -1195,9 +1281,8 @@ namespace AiMultiToolKit.FuiImporter
             var textAsImage = IsTextRasterized(element);
 
             // Figma groups that contain several text nodes can be marked as Label by the exporter.
-            // UI Toolkit Label cannot hold children, so group-labels become VisualElement containers
-            // while true Figma TEXT nodes still become ui:Label. Rich Figma text with gradient/stroke/shadow
-            // is rasterized by the Figma plugin and becomes a VisualElement with background-image.
+            // UI Toolkit Label cannot hold children, so group-labels become VisualElement containers.
+            // True Figma TEXT nodes stay editable ui:Label; gradients/shadows/outlines are mapped to TextCore/USS.
             if (rawType == "Label" && textAsImage) type = "Image";
             else if (rawType == "Label" && childList != null && childList.Count > 0 && string.IsNullOrWhiteSpace(ownText))
                 type = "Panel";
@@ -1225,8 +1310,18 @@ namespace AiMultiToolKit.FuiImporter
             attrs.Append(" class=\"").Append(XmlEscape(string.Join(" ", classes.ToArray()))).Append("\"");
 
             var text = !string.IsNullOrWhiteSpace(ownText) ? ownText : FindVisibleText(element);
-            if (type == "Label" && !textAsImage) attrs.Append(" text=\"").Append(XmlEscape(text)).Append("\"");
-            else if (type == "Button" && (childList == null || childList.Count == 0) && !string.IsNullOrEmpty(text)) attrs.Append(" text=\"").Append(XmlEscape(text)).Append("\"");
+            var hasTextGradient = FuiJson.GetObject(style, "textGradient") != null;
+            var editableText = BuildEditableLabelText(text, style, name);
+            if (type == "Label" && !textAsImage)
+            {
+                attrs.Append(" text=\"").Append(XmlEscape(editableText)).Append("\"");
+                if (hasTextGradient) attrs.Append(" enable-rich-text=\"true\"");
+            }
+            else if (type == "Button" && (childList == null || childList.Count == 0) && !string.IsNullOrEmpty(text))
+            {
+                attrs.Append(" text=\"").Append(XmlEscape(editableText)).Append("\"");
+                if (hasTextGradient) attrs.Append(" enable-rich-text=\"true\"");
+            }
             else if (type == "Input" || type == "Входные данные")
             {
                 attrs.Append(" label=\"").Append(XmlEscape(text)).Append("\"");
@@ -1344,6 +1439,20 @@ namespace AiMultiToolKit.FuiImporter
         {
             var localX = FuiJson.GetDouble(bounds, "x", 0) - FuiJson.GetDouble(parentBounds, "x", 0);
             var localY = FuiJson.GetDouble(bounds, "y", 0) - FuiJson.GetDouble(parentBounds, "y", 0);
+            var parentWidth = FuiJson.GetDouble(parentBounds, "width", 0);
+            var parentHeight = FuiJson.GetDouble(parentBounds, "height", 0);
+
+            if (ShouldClampToParentBackground(anchor, bounds, parentBounds))
+            {
+                _uss.AppendLine("  left: 0;");
+                _uss.AppendLine("  top: 0;");
+                if (parentWidth > 0) AppendPx("width", parentWidth);
+                else _uss.AppendLine("  right: 0;");
+                if (parentHeight > 0) AppendPx("height", parentHeight);
+                else _uss.AppendLine("  bottom: 0;");
+                _uss.AppendLine("  overflow: hidden;");
+                return;
+            }
 
             if (anchor != null)
             {
@@ -1354,25 +1463,17 @@ namespace AiMultiToolKit.FuiImporter
                     _uss.AppendLine("  right: 0;");
                     _uss.AppendLine("  top: 0;");
                     _uss.AppendLine("  bottom: 0;");
+                    _uss.AppendLine("  overflow: hidden;");
                     return;
                 }
-
-                var hasLeft = anchor.ContainsKey("left");
-                var hasRight = anchor.ContainsKey("right");
-                var hasTop = anchor.ContainsKey("top");
-                var hasBottom = anchor.ContainsKey("bottom");
-                if (hasLeft) AppendPx("left", FuiJson.GetDouble(anchor, "left", 0));
-                if (hasRight) AppendPx("right", FuiJson.GetDouble(anchor, "right", 0));
-                if (hasTop) AppendPx("top", FuiJson.GetDouble(anchor, "top", 0));
-                if (hasBottom) AppendPx("bottom", FuiJson.GetDouble(anchor, "bottom", 0));
-
-                // Some Figma centered elements have a semantic center anchor, but UI Toolkit absolute
-                // positioning still needs explicit local left/top. Without this they snap to 0,0.
-                if (!hasLeft && !hasRight) AppendPx("left", localX);
-                if (!hasTop && !hasBottom) AppendPx("top", localY);
-                if (anchor.ContainsKey("width") || (!hasLeft || !hasRight) || width > 0) AppendPx("width", FuiJson.GetDouble(anchor, "width", width));
-                if (anchor.ContainsKey("height") || (!hasTop || !hasBottom) || height > 0) AppendPx("height", FuiJson.GetDouble(anchor, "height", height));
-                return;
+                if (scenario == "B_BOTTOM_RIGHT")
+                {
+                    _uss.AppendLine("  right: " + Num(Math.Max(0, parentWidth - localX - width)) + "px;");
+                    _uss.AppendLine("  bottom: " + Num(Math.Max(0, parentHeight - localY - height)) + "px;");
+                    AppendPx("width", width);
+                    AppendPx("height", height);
+                    return;
+                }
             }
 
             // Figma exports bounds in screen coordinates. UI Toolkit absolute positioning is local to the parent.
@@ -1380,6 +1481,19 @@ namespace AiMultiToolKit.FuiImporter
             AppendPx("top", localY);
             AppendPx("width", width);
             AppendPx("height", height);
+        }
+
+        private static bool ShouldClampToParentBackground(Dictionary<string, object> anchor, Dictionary<string, object> bounds, Dictionary<string, object> parentBounds)
+        {
+            if (bounds == null || parentBounds == null) return false;
+            var scenario = FuiJson.GetString(anchor, "scenario", string.Empty);
+            if (scenario == "A_FULL_STRETCH_BACKGROUND") return true;
+            var pw = FuiJson.GetDouble(parentBounds, "width", 0);
+            var ph = FuiJson.GetDouble(parentBounds, "height", 0);
+            var w = FuiJson.GetDouble(bounds, "width", 0);
+            var h = FuiJson.GetDouble(bounds, "height", 0);
+            if (pw <= 0 || ph <= 0 || w <= 0 || h <= 0) return false;
+            return w >= pw - 1 && h >= ph - 1;
         }
 
         private void AppendLayout(Dictionary<string, object> layout)
@@ -1444,7 +1558,12 @@ namespace AiMultiToolKit.FuiImporter
         {
             if (style == null) return;
             var color = FuiJson.GetObject(style, "color");
-            if (color != null) _uss.AppendLine("  color: " + ColorToCss(color) + ";");
+            if (FuiJson.GetObject(style, "textGradient") != null)
+            {
+                _uss.AppendLine("  -unity-rich-text: true;");
+                _uss.AppendLine("  color: rgb(255, 255, 255);");
+            }
+            else if (color != null) _uss.AppendLine("  color: " + ColorToCss(color) + ";");
 
             var fontSize = FuiJson.GetNullableDouble(style, "fontSize");
             if (fontSize.HasValue && fontSize.Value > 0) AppendPx("font-size", fontSize.Value);
@@ -1482,7 +1601,11 @@ namespace AiMultiToolKit.FuiImporter
                 var fontAssetPath = ResolveFontAssetPath(family, fontStyle);
                 if (!string.IsNullOrEmpty(fontAssetPath))
                 {
-                    _uss.AppendLine("  -unity-font: url(\"project://database/" + CssUrl(AiFuiImporterUtility.NormalizeAssetPath(fontAssetPath)) + "\");");
+                    var normalizedFontAssetPath = AiFuiImporterUtility.NormalizeAssetPath(fontAssetPath);
+                    if (normalizedFontAssetPath.EndsWith(".asset", StringComparison.OrdinalIgnoreCase))
+                        _uss.AppendLine("  -unity-font-definition: url(\"project://database/" + CssUrl(normalizedFontAssetPath) + "\");");
+                    else
+                        _uss.AppendLine("  -unity-font: url(\"project://database/" + CssUrl(normalizedFontAssetPath) + "\");");
                     _uss.AppendLine("  font-family: \"" + CssString(family) + "\";");
                 }
                 else
@@ -1538,16 +1661,28 @@ namespace AiMultiToolKit.FuiImporter
             var c1 = stops != null && stops.Count > 1 ? FuiJson.GetObject(stops[stops.Count - 1] as Dictionary<string, object>, "color") : c0;
             var top = ToUnityColor(c0, Color.white);
             var bottom = ToUnityColor(c1, top);
+            var type = FuiJson.GetString(gradient, "type", "linear").ToLowerInvariant();
+            var mode = type.Contains("radial") ? 3 : type.Contains("horizontal") ? 1 : 2;
             var so = new SerializedObject(obj);
+            TrySetSerializedEnum(so, "m_ColorMode", mode);
+            TrySetSerializedEnum(so, "colorMode", mode);
             TrySetSerializedColor(so, "m_TopLeft", top);
-            TrySetSerializedColor(so, "m_TopRight", top);
-            TrySetSerializedColor(so, "m_BottomLeft", bottom);
+            TrySetSerializedColor(so, "m_TopRight", type.Contains("horizontal") ? bottom : top);
+            TrySetSerializedColor(so, "m_BottomLeft", type.Contains("horizontal") ? top : bottom);
             TrySetSerializedColor(so, "m_BottomRight", bottom);
             TrySetSerializedColor(so, "topLeft", top);
-            TrySetSerializedColor(so, "topRight", top);
-            TrySetSerializedColor(so, "bottomLeft", bottom);
+            TrySetSerializedColor(so, "topRight", type.Contains("horizontal") ? bottom : top);
+            TrySetSerializedColor(so, "bottomLeft", type.Contains("horizontal") ? top : bottom);
             TrySetSerializedColor(so, "bottomRight", bottom);
             so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void TrySetSerializedEnum(SerializedObject so, string propertyName, int value)
+        {
+            var p = so.FindProperty(propertyName);
+            if (p == null) return;
+            if (p.propertyType == SerializedPropertyType.Enum) p.enumValueIndex = Mathf.Clamp(value, 0, Math.Max(0, p.enumDisplayNames.Length - 1));
+            else if (p.propertyType == SerializedPropertyType.Integer) p.intValue = value;
         }
 
         private static void TrySetSerializedColor(SerializedObject so, string propertyName, Color color)
@@ -1588,27 +1723,80 @@ namespace AiMultiToolKit.FuiImporter
 
         private string ResolveFontAssetPath(string family, string style)
         {
-            if (_fontMetadata == null || _fontMetadata.Count == 0 || _fontPathMap == null || _fontPathMap.Count == 0) return string.Empty;
+            if (_fontPathMap == null || _fontPathMap.Count == 0) return string.Empty;
             var familyKey = AiFuiImporterUtility.Slug(family);
             var styleKey = AiFuiImporterUtility.Slug(style);
-            string fallback = string.Empty;
-            foreach (var meta in _fontMetadata)
+            string bestPath = string.Empty;
+            var bestScore = -1;
+
+            if (_fontMetadata != null)
             {
-                if (meta == null) continue;
-                var metaFamilyKey = AiFuiImporterUtility.Slug(meta.Family);
-                var metaStyleKey = AiFuiImporterUtility.Slug(meta.Style);
-                var metaNameKey = AiFuiImporterUtility.Slug((meta.FileName ?? string.Empty) + " " + (meta.Path ?? string.Empty));
-                var familyMatches = !string.IsNullOrEmpty(familyKey) && (metaFamilyKey == familyKey || metaNameKey.Contains(familyKey));
-                if (!familyMatches && string.IsNullOrEmpty(fallback)) fallback = ResolveFontMetaPath(meta);
-                if (!familyMatches) continue;
-                var resolved = ResolveFontMetaPath(meta);
-                if (string.IsNullOrEmpty(resolved)) continue;
-                if (string.IsNullOrEmpty(fallback)) fallback = resolved;
-                if (string.IsNullOrEmpty(styleKey) || metaStyleKey == styleKey || metaNameKey.Contains(styleKey)) return resolved;
+                foreach (var meta in _fontMetadata)
+                {
+                    var resolved = ResolveFontMetaPath(meta);
+                    if (string.IsNullOrEmpty(resolved)) continue;
+                    var score = ScoreFontCandidate(resolved, familyKey, styleKey, meta != null ? meta.Family : string.Empty, meta != null ? meta.Style : string.Empty);
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestPath = resolved;
+                    }
+                }
             }
-            if (!string.IsNullOrEmpty(fallback)) return fallback;
-            foreach (var kv in _fontPathMap) return kv.Value;
-            return string.Empty;
+
+            foreach (var path in _fontPathMap.Values.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                var score = ScoreFontCandidate(path, familyKey, styleKey, string.Empty, string.Empty);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestPath = path;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(bestPath) && bestScore > 0) return bestPath;
+            return _fontPathMap.Values.FirstOrDefault() ?? string.Empty;
+        }
+
+        private int ScoreFontCandidate(string assetPath, string familyKey, string styleKey, string metaFamily, string metaStyle)
+        {
+            if (string.IsNullOrEmpty(assetPath)) return 0;
+            var nameBlob = AiFuiImporterUtility.Slug(Path.GetFileNameWithoutExtension(assetPath) + " " + assetPath + " " + metaFamily + " " + metaStyle);
+            try
+            {
+                var font = AssetDatabase.LoadAssetAtPath<Font>(assetPath);
+                if (font != null)
+                {
+                    nameBlob += " " + AiFuiImporterUtility.Slug(font.name);
+                    try
+                    {
+                        var fontNamesProperty = typeof(Font).GetProperty("fontNames");
+                        var fontNamesValue = fontNamesProperty != null ? fontNamesProperty.GetValue(font, null) as string[] : null;
+                        if (fontNamesValue != null) nameBlob += " " + AiFuiImporterUtility.Slug(string.Join(" ", fontNamesValue));
+                    }
+                    catch {}
+                }
+            }
+            catch {}
+
+            var score = 0;
+            if (!string.IsNullOrEmpty(familyKey))
+            {
+                if (nameBlob.Contains(familyKey)) score += 100;
+                else
+                {
+                    var parts = familyKey.Split(new[] { '-' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var part in parts) if (part.Length >= 3 && nameBlob.Contains(part)) score += 15;
+                }
+            }
+            if (!string.IsNullOrEmpty(styleKey))
+            {
+                if (nameBlob.Contains(styleKey)) score += 50;
+                if (styleKey.Contains("bold") && nameBlob.Contains("bold")) score += 20;
+                if ((styleKey.Contains("italic") || styleKey.Contains("oblique")) && (nameBlob.Contains("italic") || nameBlob.Contains("oblique"))) score += 20;
+                if ((styleKey.Contains("regular") || styleKey.Contains("normal")) && (nameBlob.Contains("regular") || nameBlob.Contains("normal"))) score += 10;
+            }
+            return score;
         }
 
         private string ResolveFontMetaPath(FuiFontMeta meta)
@@ -1779,20 +1967,20 @@ namespace AiMultiToolKit.FuiImporter
             if (string.IsNullOrEmpty(type)) return "Panel";
             switch (type.Trim())
             {
-                case "Screen":
-                case "Button":
+                case "Screen": return "Screen";
+                case "Button": return "Button";
                 case "Text": return "Label";
-                case "Label":
-                case "Input":
-                case "Входные данные":
-                case "ProgressBar":
-                case "ScrollView":
-                case "CurrencyPanel":
-                case "InventorySlot":
-                case "Popup":
-                case "Slider":
-                case "Image":
-                case "Panel": return type.Trim();
+                case "Label": return "Label";
+                case "Input": return "Input";
+                case "Входные данные": return "Input";
+                case "ProgressBar": return "ProgressBar";
+                case "ScrollView": return "ScrollView";
+                case "CurrencyPanel": return "CurrencyPanel";
+                case "InventorySlot": return "InventorySlot";
+                case "Popup": return "Popup";
+                case "Slider": return "Slider";
+                case "Image": return "Image";
+                case "Panel": return "Panel";
                 default: return "Panel";
             }
         }
