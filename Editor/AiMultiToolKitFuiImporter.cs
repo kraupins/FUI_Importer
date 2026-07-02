@@ -69,7 +69,7 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.Space(6);
             EditorGUILayout.LabelField("AI Multi-Tool Kit · FUI → Unity UI Toolkit", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "Импортирует .fui из Figma-плагина и автоматически создаёт готовый Unity UI Toolkit проект: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, Panel Renderer-префабы и Unity-сцены. " +
+                "Импортирует .fui из Figma-плагина и автоматически создаёт готовый Unity UI Toolkit проект: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, UIDocument-префабы и Unity-сцены. " +
                 "После импорта этот пакет можно удалить: созданный UI остаётся на стандартном Unity UI Toolkit.",
                 MessageType.Info);
 
@@ -89,7 +89,7 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.LabelField("Куда импортировать", EditorStyles.boldLabel);
             _outputRoot = EditorGUILayout.TextField("Папка вывода", _outputRoot);
             EditorGUILayout.HelpBox(
-                "Все этапы включены автоматически: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, Panel Renderer-префабы и Unity-сцены.",
+                "Все этапы включены автоматически: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, UIDocument-префабы и Unity-сцены.",
                 MessageType.None);
 
             EditorGUILayout.Space(10);
@@ -129,11 +129,11 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.Space(12);
             EditorGUILayout.HelpBox(
                 "Что будет создано:\n" +
-                "UI/*.uxml + UI/*.uss — готово для UI Builder и Panel Renderer\n" +
+                "UI/*.uxml + UI/*.uss — готово для UI Builder и UIDocument\n" +
                 "Textures/* — картинки, которые подключаются в USS через background-image\n" +
                 "Fonts/* — шрифты из .fui, если они были упакованы\n" +
                 "PanelSettings/* — настройки панели UI Toolkit\n" +
-                "Prefabs/* — готовые Panel Renderer-префабы\n" +
+                "Prefabs/* — готовые UIDocument-префабы\n" +
                 "Scenes/* — готовая сцена со всеми экранами и отдельная сцена на каждый экран\n" +
                 "Source/* — исходные JSON для проверки и отладки",
                 MessageType.None);
@@ -302,8 +302,10 @@ namespace AiMultiToolKit.FuiImporter
             }
             foreach (var path in fontPathMap.Values.Distinct(StringComparer.OrdinalIgnoreCase)) ApplyUiFontImportSettings(path);
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
-            ReplaceFontFilesWithSdfFontAssets(fontPathMap, outputRoot, report);
-            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            // Важно: не создаём TextCore FontAsset через reflection.
+            // В Unity 6.5 такой FontAsset может создаться без m_Material и начать спамить
+            // UnassignedReferenceException на любой сцене. Используем реальные .ttf/.otf Font assets,
+            // которые Unity импортирует корректно и которые можно безопасно подключать через -unity-font.
 
             var usedScreenNames = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (var screen in package.Screens)
@@ -373,8 +375,10 @@ namespace AiMultiToolKit.FuiImporter
 
         private static string PrepareOutputRoot(string outputRoot, bool overwrite)
         {
+            outputRoot = AiFuiImporterUtility.NormalizeAssetPath(outputRoot);
             if (overwrite)
             {
+                CleanGeneratedOutputRoot(outputRoot);
                 AiFuiImporterUtility.EnsureAssetFolder(outputRoot);
                 return outputRoot;
             }
@@ -396,6 +400,20 @@ namespace AiMultiToolKit.FuiImporter
                 }
             }
             throw new IOException("Не удалось создать уникальную папку вывода для " + outputRoot);
+        }
+
+        private static void CleanGeneratedOutputRoot(string outputRoot)
+        {
+            if (string.IsNullOrEmpty(outputRoot)) return;
+            outputRoot = AiFuiImporterUtility.NormalizeAssetPath(outputRoot);
+            if (outputRoot == "Assets") return;
+            if (!outputRoot.StartsWith("Assets/", StringComparison.Ordinal)) return;
+            if (!AssetDatabase.IsValidFolder(outputRoot)) return;
+
+            // Полная очистка важна: старые импорты 1.0.8 могли оставить битые SDF FontAsset
+            // без m_Material. Если их не удалить, Unity продолжает спамить ошибками даже после нового импорта.
+            AssetDatabase.DeleteAsset(outputRoot);
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
         }
 
         private static void WriteTextAsset(string assetPath, string text)
@@ -575,7 +593,11 @@ namespace AiMultiToolKit.FuiImporter
                 }
                 finally
                 {
-                    UnityEngine.Object.DestroyImmediate(go);
+                    if (go != null)
+                    {
+                        go.SetActive(false);
+                        UnityEngine.Object.DestroyImmediate(go);
+                    }
                 }
             }
         }
@@ -687,27 +709,21 @@ namespace AiMultiToolKit.FuiImporter
             var visualTree = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(screen.UxmlPath);
             if (visualTree == null)
             {
-                AddReportWarning(report, "Не удалось создать Panel Renderer. Не найден UXML: " + screen.UxmlPath);
+                AddReportWarning(report, "Не удалось создать UI-объект. Не найден UXML: " + screen.UxmlPath);
                 return null;
             }
 
             var go = new GameObject(screen.Name);
-            var panelRendererType = FindPanelRendererType();
-            if (panelRendererType != null)
-            {
-                var renderer = go.AddComponent(panelRendererType);
-                var sourceAssigned = AssignPanelRenderer(renderer, visualTree, panelSettings, sortingOrder);
-                if (!sourceAssigned)
-                    AddReportWarning(report, "Panel Renderer создан, но не удалось назначить UXML через reflection. Проверь Inspector: " + screen.UxmlPath);
-            }
-            else
-            {
-                AddReportWarning(report, "Panel Renderer не найден в этой версии Unity. Использован UIDocument fallback.");
-                var doc = go.AddComponent<UIDocument>();
-                doc.panelSettings = panelSettings;
-                doc.visualTreeAsset = visualTree;
-                doc.sortingOrder = sortingOrder;
-            }
+
+            // Стабильный режим для Unity 6.5: используем стандартный UIDocument.
+            // PanelRenderer пока не создаём автоматически: в 6000.5 он может выбрасывать ошибки
+            // при создании/закрытии сцен и уничтожении объектов во время repaint/render callbacks.
+            // Сгенерированные UXML/USS полностью совместимы с UI Builder и их можно вручную повесить
+            // на PanelRenderer позже, когда Unity API будет стабильнее.
+            var doc = go.AddComponent<UIDocument>();
+            doc.panelSettings = panelSettings;
+            doc.visualTreeAsset = visualTree;
+            doc.sortingOrder = sortingOrder;
 
             go.SetActive(active);
             return go;
