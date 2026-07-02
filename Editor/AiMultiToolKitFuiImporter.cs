@@ -850,6 +850,7 @@ namespace AiMultiToolKit.FuiImporter
 
                 if (existing == null) AssetDatabase.CreateAsset(textSettings, assetPath);
                 else EditorUtility.SetDirty(textSettings);
+                AssetDatabase.SaveAssets();
                 AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceSynchronousImport);
                 return AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(assetPath) ?? textSettings;
             }
@@ -1782,7 +1783,7 @@ namespace AiMultiToolKit.FuiImporter
                 if (!string.IsNullOrEmpty(inlineFallback)) attrs.Append(" style=\"").Append(XmlEscape(inlineFallback)).Append("\"");
             }
 
-            var text = !string.IsNullOrWhiteSpace(ownText) ? ownText : FindVisibleText(element);
+            var text = CleanImportedText(!string.IsNullOrWhiteSpace(ownText) ? ownText : FindVisibleText(element));
             var hasTextGradient = FuiJson.GetObject(style, "textGradient") != null;
             var editableText = BuildEditableLabelText(text, style, name);
             if (type == "Label" && !textAsImage)
@@ -2153,14 +2154,41 @@ namespace AiMultiToolKit.FuiImporter
         }
 
 
+        private static string CleanImportedText(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return string.Empty;
+            var cleaned = text;
+
+            // Figma/TextCore internal style ids can occasionally be exported as visible text
+            // (for example "<style F0000...>"). They are not part of the player's text and can
+            // break UI Toolkit rich text parsing, so strip only known rich-text-like tags.
+            cleaned = System.Text.RegularExpressions.Regex.Replace(
+                cleaned,
+                @"</?(style|gradient|color|font|font-weight|size|alpha|mark|align|line-height|line-indent|indent|margin|margin-left|margin-right|voffset|cspace|mspace|space|pos|width|link|a|b|i|u|s|sup|sub|smallcaps|uppercase|lowercase|allcaps|nobr|noparse|sprite|br)(\s+[^<>]*)?>",
+                string.Empty,
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+            // Broken/unclosed style ids from exporters often look like "<style F0000..." with no closing >.
+            cleaned = System.Text.RegularExpressions.Regex.Replace(
+                cleaned,
+                @"<\s*style\s+F[0-9A-Fa-f_\-]+[^\r\n<>]*",
+                string.Empty,
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+            return cleaned.Trim();
+        }
+
         private string BuildEditableLabelText(string text, Dictionary<string, object> style, string elementName)
         {
-            var raw = text ?? string.Empty;
+            var raw = CleanImportedText(text ?? string.Empty);
             var gradient = FuiJson.GetObject(style, "textGradient");
             if (gradient == null) return raw;
             var presetName = EnsureTextGradientPreset(gradient, elementName);
             if (string.IsNullOrEmpty(presetName)) return raw;
-            // UI Toolkit uses TextCore rich text gradient tags. The value is XML-escaped later.
+
+            // Unity 6.5 UI Toolkit/TextCore applies gradients only through rich text tags.
+            // The returned value is still XML-escaped by the UXML writer, so the Label/Button stays editable.
+            // <color=#FFFFFFFF> prevents the element vertex color from multiplying the preset to transparent.
             return "<color=#FFFFFFFF><gradient=\"" + presetName + "\">" + raw + "</gradient></color>";
         }
 
@@ -2170,7 +2198,13 @@ namespace AiMultiToolKit.FuiImporter
             {
                 if (gradient == null || string.IsNullOrEmpty(_textGradientFolderPath)) return string.Empty;
                 AiFuiImporterUtility.EnsureAssetFolder(_textGradientFolderPath);
-                var safeName = AiFuiImporterUtility.SanitizeFileName("fui_gradient_" + elementName, "fui_gradient");
+
+                // The preset name is part of the rich text tag. Do not reuse a plain element name only:
+                // different screens often have labels named Title/Button, and a later import can overwrite
+                // the first gradient asset, making older texts lose or change their gradient.
+                var safeName = AiFuiImporterUtility.SanitizeFileName(
+                    "fui_gradient_" + elementName + "_" + ShortStableHash(FuiJson.Serialize(gradient)),
+                    "fui_gradient");
                 var assetPath = AiFuiImporterUtility.CombineAssetPath(_textGradientFolderPath, safeName + ".asset");
                 var gradientType = Type.GetType("UnityEngine.TextCore.Text.TextColorGradient, UnityEngine.TextCoreTextEngineModule")
                     ?? Type.GetType("UnityEngine.TextCore.Text.TextColorGradient, UnityEngine.TextCoreFontEngineModule")
@@ -2196,24 +2230,144 @@ namespace AiMultiToolKit.FuiImporter
         {
             if (obj == null || gradient == null) return;
             var stops = FuiJson.GetArray(gradient, "stops");
-            var c0 = stops != null && stops.Count > 0 ? FuiJson.GetObject(stops[0] as Dictionary<string, object>, "color") : null;
-            var c1 = stops != null && stops.Count > 1 ? FuiJson.GetObject(stops[stops.Count - 1] as Dictionary<string, object>, "color") : c0;
-            var top = ToUnityColor(c0, Color.white);
-            var bottom = ToUnityColor(c1, top);
+
+            var c0 = GetGradientStopColor(stops, 0, null);
+            var c1 = GetGradientStopColor(stops, 1, GetGradientStopColor(stops, stops != null ? stops.Count - 1 : 0, c0));
+            var c2 = GetGradientStopColor(stops, 2, c1);
+            var c3 = GetGradientStopColor(stops, 3, c2);
+
+            var first = ForceOpaque(ToUnityColor(c0, Color.white));
+            var second = ForceOpaque(ToUnityColor(c1, first));
+            var third = ForceOpaque(ToUnityColor(c2, second));
+            var fourth = ForceOpaque(ToUnityColor(c3, third));
+
             var type = FuiJson.GetString(gradient, "type", "linear").ToLowerInvariant();
-            var mode = type.Contains("radial") ? 3 : type.Contains("horizontal") ? 1 : 2;
+            var angle = FuiJson.GetDouble(gradient, "angle", double.NaN);
+            var horizontal = type.Contains("horizontal") || (!double.IsNaN(angle) && Math.Abs(Math.Sin(angle * Math.PI / 180.0)) < 0.35);
+            var fourCorners = type.Contains("radial") || type.Contains("diamond") || type.Contains("corner") || (stops != null && stops.Count >= 3);
+            var mode = fourCorners ? 3 : horizontal ? 1 : 2;
+
+            var topLeft = first;
+            var topRight = fourCorners ? second : horizontal ? second : first;
+            var bottomLeft = fourCorners ? third : horizontal ? first : second;
+            var bottomRight = fourCorners ? fourth : second;
+
             var so = new SerializedObject(obj);
             TrySetSerializedEnum(so, "m_ColorMode", mode);
             TrySetSerializedEnum(so, "colorMode", mode);
-            TrySetSerializedColor(so, "m_TopLeft", top);
-            TrySetSerializedColor(so, "m_TopRight", type.Contains("horizontal") ? bottom : top);
-            TrySetSerializedColor(so, "m_BottomLeft", type.Contains("horizontal") ? top : bottom);
-            TrySetSerializedColor(so, "m_BottomRight", bottom);
-            TrySetSerializedColor(so, "topLeft", top);
-            TrySetSerializedColor(so, "topRight", type.Contains("horizontal") ? bottom : top);
-            TrySetSerializedColor(so, "bottomLeft", type.Contains("horizontal") ? top : bottom);
-            TrySetSerializedColor(so, "bottomRight", bottom);
+            TrySetSerializedColor(so, "m_TopLeft", topLeft);
+            TrySetSerializedColor(so, "m_TopRight", topRight);
+            TrySetSerializedColor(so, "m_BottomLeft", bottomLeft);
+            TrySetSerializedColor(so, "m_BottomRight", bottomRight);
+            TrySetSerializedColor(so, "topLeft", topLeft);
+            TrySetSerializedColor(so, "topRight", topRight);
+            TrySetSerializedColor(so, "bottomLeft", bottomLeft);
+            TrySetSerializedColor(so, "bottomRight", bottomRight);
             so.ApplyModifiedPropertiesWithoutUndo();
+
+            // Some Unity 6.5 builds expose TextColorGradient members as public fields/properties rather than
+            // the serialized names above. Set both paths, but keep the old reflection-free flow intact.
+            TrySetMemberEnum(obj, "colorMode", mode);
+            TrySetMemberEnum(obj, "m_ColorMode", mode);
+            TrySetMemberColor(obj, "topLeft", topLeft);
+            TrySetMemberColor(obj, "topRight", topRight);
+            TrySetMemberColor(obj, "bottomLeft", bottomLeft);
+            TrySetMemberColor(obj, "bottomRight", bottomRight);
+            TrySetMemberColor(obj, "m_TopLeft", topLeft);
+            TrySetMemberColor(obj, "m_TopRight", topRight);
+            TrySetMemberColor(obj, "m_BottomLeft", bottomLeft);
+            TrySetMemberColor(obj, "m_BottomRight", bottomRight);
+            EditorUtility.SetDirty(obj);
+        }
+
+        private static Dictionary<string, object> GetGradientStopColor(List<object> stops, int index, Dictionary<string, object> fallback)
+        {
+            if (stops == null || index < 0 || index >= stops.Count) return fallback;
+            var stop = stops[index] as Dictionary<string, object>;
+            if (stop == null) return fallback;
+
+            var nested = FuiJson.GetObject(stop, "color")
+                ?? FuiJson.GetObject(stop, "rgba")
+                ?? FuiJson.GetObject(stop, "fill")
+                ?? FuiJson.GetObject(stop, "value");
+            if (nested != null) return nested;
+            if (stop.ContainsKey("r") && stop.ContainsKey("g") && stop.ContainsKey("b")) return stop;
+            return fallback;
+        }
+
+        private static Color ForceOpaque(Color color)
+        {
+            // Text gradients exported from design tools sometimes carry zero alpha in the preset colors.
+            // In UI Toolkit that makes the whole glyph transparent even though the Figma text is visible.
+            color.a = 1f;
+            return color;
+        }
+
+        private static void TrySetMemberColor(UnityEngine.Object obj, string memberName, Color value)
+        {
+            TrySetMemberValue(obj, memberName, value);
+        }
+
+        private static void TrySetMemberEnum(UnityEngine.Object obj, string memberName, int value)
+        {
+            if (obj == null || string.IsNullOrEmpty(memberName)) return;
+            var type = obj.GetType();
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+            var field = type.GetField(memberName, flags);
+            if (field != null)
+            {
+                try
+                {
+                    if (field.FieldType.IsEnum) field.SetValue(obj, Enum.ToObject(field.FieldType, value));
+                    else if (field.FieldType == typeof(int)) field.SetValue(obj, value);
+                }
+                catch { }
+                return;
+            }
+
+            var property = type.GetProperty(memberName, flags);
+            if (property != null && property.CanWrite)
+            {
+                try
+                {
+                    if (property.PropertyType.IsEnum) property.SetValue(obj, Enum.ToObject(property.PropertyType, value), null);
+                    else if (property.PropertyType == typeof(int)) property.SetValue(obj, value, null);
+                }
+                catch { }
+            }
+        }
+
+        private static void TrySetMemberValue(UnityEngine.Object obj, string memberName, object value)
+        {
+            if (obj == null || string.IsNullOrEmpty(memberName)) return;
+            var type = obj.GetType();
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+            var field = type.GetField(memberName, flags);
+            if (field != null && field.FieldType.IsInstanceOfType(value))
+            {
+                try { field.SetValue(obj, value); } catch { }
+                return;
+            }
+            var property = type.GetProperty(memberName, flags);
+            if (property != null && property.CanWrite && property.PropertyType.IsInstanceOfType(value))
+            {
+                try { property.SetValue(obj, value, null); } catch { }
+            }
+        }
+
+        private static string ShortStableHash(string value)
+        {
+            unchecked
+            {
+                uint hash = 2166136261u;
+                var text = value ?? string.Empty;
+                for (var i = 0; i < text.Length; i++)
+                {
+                    hash ^= text[i];
+                    hash *= 16777619u;
+                }
+                return hash.ToString("x8", CultureInfo.InvariantCulture);
+            }
         }
 
         private static void TrySetSerializedEnum(SerializedObject so, string propertyName, int value)
