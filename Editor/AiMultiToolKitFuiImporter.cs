@@ -2569,6 +2569,22 @@ namespace AiMultiToolKit.FuiImporter
             catch { return fallback; }
         }
 
+        public static bool GetBool(Dictionary<string, object> dict, string key, bool fallback)
+        {
+            if (dict == null || key == null || !dict.ContainsKey(key) || dict[key] == null) return fallback;
+            var value = dict[key];
+            if (value is bool) return (bool)value;
+            try
+            {
+                var text = Convert.ToString(value, CultureInfo.InvariantCulture);
+                if (string.IsNullOrEmpty(text)) return fallback;
+                if (string.Equals(text, "true", StringComparison.OrdinalIgnoreCase) || text == "1") return true;
+                if (string.Equals(text, "false", StringComparison.OrdinalIgnoreCase) || text == "0") return false;
+                return fallback;
+            }
+            catch { return fallback; }
+        }
+
         public static double? GetNullableDouble(Dictionary<string, object> dict, string key)
         {
             if (dict == null || key == null || !dict.ContainsKey(key) || dict[key] == null) return null;
