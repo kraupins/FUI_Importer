@@ -69,7 +69,7 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.Space(6);
             EditorGUILayout.LabelField("AI Multi-Tool Kit · FUI → Unity UI Toolkit", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "Импортирует .fui из Figma-плагина и автоматически создаёт готовый Unity UI Toolkit проект: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, UIDocument-префабы и Unity-сцены. " +
+                "Импортирует .fui из Figma-плагина и автоматически создаёт готовый Unity UI Toolkit проект: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, Panel Renderer-префабы и Unity-сцены. " +
                 "После импорта этот пакет можно удалить: созданный UI остаётся на стандартном Unity UI Toolkit.",
                 MessageType.Info);
 
@@ -89,7 +89,7 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.LabelField("Куда импортировать", EditorStyles.boldLabel);
             _outputRoot = EditorGUILayout.TextField("Папка вывода", _outputRoot);
             EditorGUILayout.HelpBox(
-                "Все этапы включены автоматически: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, UIDocument-префабы и Unity-сцены.",
+                "Все этапы включены автоматически: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, Panel Renderer-префабы и Unity-сцены.",
                 MessageType.None);
 
             EditorGUILayout.Space(10);
@@ -129,11 +129,11 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.Space(12);
             EditorGUILayout.HelpBox(
                 "Что будет создано:\n" +
-                "UI/*.uxml + UI/*.uss — готово для UI Builder и UIDocument\n" +
+                "UI/*.uxml + UI/*.uss — готово для UI Builder и Panel Renderer\n" +
                 "Textures/* — картинки, которые подключаются в USS через background-image\n" +
                 "Fonts/* — шрифты из .fui, если они были упакованы\n" +
                 "PanelSettings/* — настройки панели UI Toolkit\n" +
-                "Prefabs/* — готовые UIDocument-префабы\n" +
+                "Prefabs/* — готовые Panel Renderer-префабы\n" +
                 "Scenes/* — готовая сцена со всеми экранами и отдельная сцена на каждый экран\n" +
                 "Source/* — исходные JSON для проверки и отладки",
                 MessageType.None);
@@ -584,7 +584,7 @@ namespace AiMultiToolKit.FuiImporter
                 }
 
                 var prefabPath = AiFuiImporterUtility.CombineAssetPath(folder, screen.Name + ".prefab");
-                var go = CreateUiToolkitPanelObject(screen, panelSettings, 0, true, report);
+                var go = CreateUiToolkitPanelObject(screen, panelSettings, 0, false, report);
                 if (go == null) continue;
                 try
                 {
@@ -687,7 +687,7 @@ namespace AiMultiToolKit.FuiImporter
                 scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
                 scene.name = Path.GetFileNameWithoutExtension(sceneAssetPath);
 
-                var go = CreateUiToolkitPanelObject(screen, panelSettings, 0, true, report);
+                var go = CreateUiToolkitPanelObject(screen, panelSettings, 0, false, report);
                 if (go != null) SceneManager.MoveGameObjectToScene(go, scene);
 
                 EditorSceneManager.SaveScene(scene, sceneAssetPath);
@@ -714,16 +714,13 @@ namespace AiMultiToolKit.FuiImporter
             }
 
             var go = new GameObject(screen.Name);
+            go.SetActive(false);
 
-            // Стабильный режим для Unity 6.5: используем стандартный UIDocument.
-            // PanelRenderer пока не создаём автоматически: в 6000.5 он может выбрасывать ошибки
-            // при создании/закрытии сцен и уничтожении объектов во время repaint/render callbacks.
-            // Сгенерированные UXML/USS полностью совместимы с UI Builder и их можно вручную повесить
-            // на PanelRenderer позже, когда Unity API будет стабильнее.
-            var doc = go.AddComponent<UIDocument>();
-            doc.panelSettings = panelSettings;
-            doc.visualTreeAsset = visualTree;
-            doc.sortingOrder = sortingOrder;
+            // Unity 6.5: создаём актуальный Panel Renderer, чтобы не было warning миграции runtime UI.
+            var renderer = go.AddComponent<PanelRenderer>();
+            renderer.panelSettings = panelSettings;
+            renderer.visualTreeAsset = visualTree;
+            renderer.sortingOrder = sortingOrder;
 
             go.SetActive(active);
             return go;
@@ -1204,6 +1201,8 @@ namespace AiMultiToolKit.FuiImporter
         private readonly StringBuilder _uss = new StringBuilder();
         private int _elementSeq;
         private string _screenClass;
+        private double _screenWidth;
+        private double _screenHeight;
 
         public FuiUiToolkitGenerator(Dictionary<string, object> screen, string ussAssetPath, Dictionary<string, string> assetPathMap, Dictionary<string, string> fontPathMap, List<FuiFontMeta> fontMetadata, string textGradientFolderPath, FuiImportReport report)
         {
@@ -1230,6 +1229,8 @@ namespace AiMultiToolKit.FuiImporter
             var screenHeight = FuiJson.GetDouble(_screen, "height", 0);
             if (screenWidth <= 0) screenWidth = FuiJson.GetDouble(rootBounds, "width", 0);
             if (screenHeight <= 0) screenHeight = FuiJson.GetDouble(rootBounds, "height", 0);
+            _screenWidth = screenWidth;
+            _screenHeight = screenHeight;
             if (rootBounds != null)
             {
                 rootBounds["width"] = screenWidth;
@@ -1251,7 +1252,6 @@ namespace AiMultiToolKit.FuiImporter
             _uss.AppendLine();
             _uss.AppendLine(".fui_element {");
             _uss.AppendLine("  overflow: hidden;");
-            _uss.AppendLine("  box-sizing: border-box;");
             _uss.AppendLine("}");
             _uss.AppendLine();
             _uss.AppendLine(".fui_type_label {");
@@ -1324,6 +1324,15 @@ namespace AiMultiToolKit.FuiImporter
             var attrs = new StringBuilder();
             attrs.Append(" name=\"").Append(XmlEscape(name)).Append("\"");
             attrs.Append(" class=\"").Append(XmlEscape(string.Join(" ", classes.ToArray()))).Append("\"");
+            if (isRoot && _screenWidth > 0 && _screenHeight > 0)
+            {
+                attrs.Append(" style=\"")
+                    .Append("width: ").Append(Num(_screenWidth)).Append("px; ")
+                    .Append("height: ").Append(Num(_screenHeight)).Append("px; ")
+                    .Append("min-width: ").Append(Num(_screenWidth)).Append("px; ")
+                    .Append("min-height: ").Append(Num(_screenHeight)).Append("px; ")
+                    .Append("flex-grow: 0; flex-shrink: 0; position: relative; overflow: hidden;\"");
+            }
 
             var text = !string.IsNullOrWhiteSpace(ownText) ? ownText : FindVisibleText(element);
             var hasTextGradient = FuiJson.GetObject(style, "textGradient") != null;
@@ -1396,11 +1405,16 @@ namespace AiMultiToolKit.FuiImporter
 
             if (isRoot)
             {
-                if (width > 0) AppendPx("width", width); else _uss.AppendLine("  width: 100%;");
-                if (height > 0) AppendPx("height", height); else _uss.AppendLine("  height: 100%;");
+                var rootWidth = _screenWidth > 0 ? _screenWidth : width;
+                var rootHeight = _screenHeight > 0 ? _screenHeight : height;
+                if (rootWidth > 0) AppendPx("width", rootWidth); else _uss.AppendLine("  width: 100%;");
+                if (rootHeight > 0) AppendPx("height", rootHeight); else _uss.AppendLine("  height: 100%;");
+                if (rootWidth > 0) AppendPx("min-width", rootWidth);
+                if (rootHeight > 0) AppendPx("min-height", rootHeight);
                 _uss.AppendLine("  flex-grow: 0;");
                 _uss.AppendLine("  flex-shrink: 0;");
                 _uss.AppendLine("  position: relative;");
+                _uss.AppendLine("  overflow: hidden;");
             }
             else if (forceAbsolute)
             {
@@ -1529,12 +1543,8 @@ namespace AiMultiToolKit.FuiImporter
             _uss.AppendLine("  justify-content: " + CssKeyword(justify, "flex-start") + ";");
             _uss.AppendLine("  align-items: " + CssKeyword(align, "flex-start") + ";");
 
-            var gap = FuiJson.GetDouble(layout, "gap", 0);
-            if (gap > 0)
-            {
-                AppendPx("row-gap", gap);
-                AppendPx("column-gap", gap);
-            }
+            // UI Toolkit 6000.5 USS does not support CSS row-gap/column-gap.
+            // Pixel-perfect Figma export uses absolute child positions, so layout gap is intentionally not emitted.
 
             var padding = FuiJson.GetObject(layout, "padding");
             if (padding != null)
@@ -1576,7 +1586,6 @@ namespace AiMultiToolKit.FuiImporter
             var color = FuiJson.GetObject(style, "color");
             if (FuiJson.GetObject(style, "textGradient") != null)
             {
-                _uss.AppendLine("  -unity-rich-text: true;");
                 _uss.AppendLine("  color: rgb(255, 255, 255);");
             }
             else if (color != null) _uss.AppendLine("  color: " + ColorToCss(color) + ";");
@@ -1622,7 +1631,6 @@ namespace AiMultiToolKit.FuiImporter
                         _uss.AppendLine("  -unity-font-definition: url(\"project://database/" + CssUrl(normalizedFontAssetPath) + "\");");
                     else
                         _uss.AppendLine("  -unity-font: url(\"project://database/" + CssUrl(normalizedFontAssetPath) + "\");");
-                    _uss.AppendLine("  font-family: \"" + CssString(family) + "\";");
                 }
                 else
                 {
