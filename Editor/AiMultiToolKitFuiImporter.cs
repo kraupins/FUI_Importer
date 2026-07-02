@@ -69,7 +69,7 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.Space(6);
             EditorGUILayout.LabelField("AI Multi-Tool Kit · FUI → Unity UI Toolkit", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "Импортирует .fui из Figma-плагина и автоматически создаёт готовый Unity UI Toolkit проект: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings и Unity-сцены. Префабы с PanelRenderer не создаются, потому что Unity AssetPreview может выдавать некорректный AABB/NaN для UI Toolkit renderer-prefab assets. " +
+                "Импортирует .fui из Figma-плагина и автоматически создаёт готовый Unity UI Toolkit проект: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, RuntimeTheme и отдельные Unity-сцены. Префабы с PanelRenderer не создаются, потому что Unity AssetPreview может выдавать некорректный AABB/NaN для UI Toolkit renderer-prefab assets. " +
                 "После импорта этот пакет можно удалить: созданный UI остаётся на стандартном Unity UI Toolkit.",
                 MessageType.Info);
 
@@ -89,7 +89,7 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.LabelField("Куда импортировать", EditorStyles.boldLabel);
             _outputRoot = EditorGUILayout.TextField("Папка вывода", _outputRoot);
             EditorGUILayout.HelpBox(
-                "Все этапы включены автоматически: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings и Unity-сцены. Префабы с PanelRenderer не создаются, потому что Unity AssetPreview может выдавать некорректный AABB/NaN для UI Toolkit renderer-prefab assets.",
+                "Все этапы включены автоматически: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, RuntimeTheme и отдельные Unity-сцены. Префабы с PanelRenderer не создаются, потому что Unity AssetPreview может выдавать некорректный AABB/NaN для UI Toolkit renderer-prefab assets.",
                 MessageType.None);
 
             EditorGUILayout.Space(10);
@@ -136,7 +136,7 @@ namespace AiMultiToolKit.FuiImporter
                 "Textures/* — картинки, которые подключаются в USS через background-image\n" +
                 "Fonts/* — шрифты из .fui, если они были упакованы\n" +
                 "PanelSettings/* — настройки панели UI Toolkit\n" +
-                "Scenes/* — готовая сцена со всеми экранами и отдельная сцена на каждый экран\n" +
+                "Scenes/* — отдельная сцена на каждый экран\n" +
                 "Info/* — служебная информация импорта",
                 MessageType.None);
 
@@ -409,10 +409,12 @@ namespace AiMultiToolKit.FuiImporter
 
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
 
+            var runtimeTheme = CreateRuntimeThemeStyleSheet(outputRoot, projectName, generatedScreens, report);
+
             PanelSettings panelSettings = null;
             if (options.CreatePanelSettings || options.CreateScreenPrefabs || options.CreateSceneAssets || options.AddScreensToOpenScene)
             {
-                panelSettings = CreatePanelSettingsAsset(outputRoot, projectName, generatedScreens, report);
+                panelSettings = CreatePanelSettingsAsset(outputRoot, projectName, generatedScreens, runtimeTheme, report);
             }
 
             if (options.CreateScreenPrefabs)
@@ -436,10 +438,63 @@ namespace AiMultiToolKit.FuiImporter
             if (options.OpenFirstUxmlAfterImport && report.GeneratedUxml.Count > 0)
             {
                 var firstUxml = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(report.GeneratedUxml[0]);
-                if (firstUxml != null) EditorApplication.delayCall += () => AssetDatabase.OpenAsset(firstUxml);
+                if (firstUxml != null) EditorApplication.delayCall += () => { AssetDatabase.OpenAsset(firstUxml); TryEnableUiBuilderMatchGameView(); };
             }
 
             return report;
+        }
+
+
+        private static void TryEnableUiBuilderMatchGameView()
+        {
+            // UI Builder stores Canvas options outside of the UXML asset. Unity does not expose
+            // a stable public API for this checkbox, so this is a best-effort reflection pass.
+            try
+            {
+                EditorApplication.delayCall += () =>
+                {
+                    try
+                    {
+                        foreach (var window in Resources.FindObjectsOfTypeAll<EditorWindow>())
+                        {
+                            if (window == null) continue;
+                            var type = window.GetType();
+                            var typeName = type.FullName ?? type.Name;
+                            if (typeName.IndexOf("Builder", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                            TrySetMatchingBoolMembers(window, type);
+                            window.Repaint();
+                        }
+                    }
+                    catch { }
+                };
+            }
+            catch { }
+        }
+
+        private static void TrySetMatchingBoolMembers(object target, Type type)
+        {
+            if (target == null || type == null) return;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+            foreach (var prop in type.GetProperties(flags))
+            {
+                try
+                {
+                    if (!prop.CanWrite || prop.PropertyType != typeof(bool)) continue;
+                    var key = (prop.Name ?? string.Empty).ToLowerInvariant();
+                    if (key.Contains("match") && key.Contains("game") && key.Contains("view")) prop.SetValue(target, true, null);
+                }
+                catch { }
+            }
+            foreach (var field in type.GetFields(flags))
+            {
+                try
+                {
+                    if (field.FieldType != typeof(bool)) continue;
+                    var key = (field.Name ?? string.Empty).ToLowerInvariant();
+                    if (key.Contains("match") && key.Contains("game") && key.Contains("view")) field.SetValue(target, true);
+                }
+                catch { }
+            }
         }
 
         private static string PrepareOutputRoot(string outputRoot, bool overwrite)
@@ -597,7 +652,37 @@ namespace AiMultiToolKit.FuiImporter
         }
 
 
-        private static PanelSettings CreatePanelSettingsAsset(string outputRoot, string projectName, List<FuiGeneratedScreenAsset> screens, FuiImportReport report)
+
+        private static ThemeStyleSheet CreateRuntimeThemeStyleSheet(string outputRoot, string projectName, List<FuiGeneratedScreenAsset> screens, FuiImportReport report)
+        {
+            try
+            {
+                if (screens == null || screens.Count == 0) return null;
+                var folder = AiFuiImporterUtility.CombineAssetPath(outputRoot, "PanelSettings");
+                AiFuiImporterUtility.EnsureAssetFolder(folder);
+                var themePath = AiFuiImporterUtility.CombineAssetPath(folder, AiFuiImporterUtility.SanitizeFileName(projectName + "_RuntimeTheme", "FUI_RuntimeTheme") + ".tss");
+                var sb = new StringBuilder();
+                sb.AppendLine("/* Auto-generated FUI runtime theme. Imports generated USS files for UI Toolkit runtime preview. */");
+                foreach (var screen in screens)
+                {
+                    if (screen == null || string.IsNullOrEmpty(screen.UssPath)) continue;
+                    var relative = AiFuiImporterUtility.MakeRelativeAssetUrl(themePath, screen.UssPath);
+                    sb.AppendLine("@import url(\"" + relative.Replace("\\", "/") + "\");");
+                }
+                WriteTextAsset(themePath, sb.ToString());
+                AssetDatabase.ImportAsset(themePath, ImportAssetOptions.ForceSynchronousImport);
+                var theme = AssetDatabase.LoadAssetAtPath<ThemeStyleSheet>(themePath);
+                if (theme == null) AddReportWarning(report, "RuntimeTheme .tss создан, но Unity не смогла загрузить его как ThemeStyleSheet: " + themePath);
+                return theme;
+            }
+            catch (Exception ex)
+            {
+                AddReportWarning(report, "Не удалось создать RuntimeTheme.tss: " + ex.Message);
+                return null;
+            }
+        }
+
+        private static PanelSettings CreatePanelSettingsAsset(string outputRoot, string projectName, List<FuiGeneratedScreenAsset> screens, ThemeStyleSheet runtimeTheme, FuiImportReport report)
         {
             var folder = AiFuiImporterUtility.CombineAssetPath(outputRoot, "PanelSettings");
             AiFuiImporterUtility.EnsureAssetFolder(folder);
@@ -616,6 +701,13 @@ namespace AiMultiToolKit.FuiImporter
             panelSettings.referenceResolution = reference;
             panelSettings.screenMatchMode = PanelScreenMatchMode.MatchWidthOrHeight;
             panelSettings.match = 0.5f;
+            if (runtimeTheme != null)
+            {
+                TrySetMemberObject(panelSettings, "themeStyleSheet", runtimeTheme);
+                var soTheme = new SerializedObject(panelSettings);
+                TrySetSerializedObjectReference(soTheme, "m_ThemeStyleSheet", runtimeTheme);
+                soTheme.ApplyModifiedPropertiesWithoutUndo();
+            }
             EditorUtility.SetDirty(panelSettings);
             AssetDatabase.SaveAssets();
 
@@ -660,10 +752,8 @@ namespace AiMultiToolKit.FuiImporter
             AiFuiImporterUtility.EnsureAssetFolder(folder);
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
 
-            var safeProject = AiFuiImporterUtility.SanitizeFileName(projectName, "FUI_Project");
-            var allScreensPath = AiFuiImporterUtility.CombineAssetPath(folder, safeProject + "_AllScreens.unity");
-            CreateAllScreensScene(allScreensPath, projectName, screens, panelSettings, report);
-
+            // Общая сцена со всеми экранами больше не создаётся: она мешала симуляции и могла
+            // накладывать экраны друг на друга. Генерируем только отдельную сцену на каждый экран.
             foreach (var screen in screens)
             {
                 if (screen == null) continue;
@@ -730,7 +820,7 @@ namespace AiMultiToolKit.FuiImporter
                 scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
                 scene.name = Path.GetFileNameWithoutExtension(sceneAssetPath);
 
-                var go = CreateUiToolkitPanelObject(screen, panelSettings, 0, false, report);
+                var go = CreateUiToolkitPanelObject(screen, panelSettings, 0, true, report);
                 if (go != null) SceneManager.MoveGameObjectToScene(go, scene);
 
                 EditorSceneManager.SaveScene(scene, sceneAssetPath);
@@ -809,6 +899,35 @@ namespace AiMultiToolKit.FuiImporter
             so.ApplyModifiedPropertiesWithoutUndo();
             EditorUtility.SetDirty(renderer);
             return assignedSource;
+        }
+
+
+        private static bool TrySetMemberObject(object target, string memberName, object value)
+        {
+            if (target == null || string.IsNullOrEmpty(memberName)) return false;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+            var type = target.GetType();
+            try
+            {
+                var prop = type.GetProperty(memberName, flags);
+                if (prop != null && prop.CanWrite && (value == null || prop.PropertyType.IsAssignableFrom(value.GetType())))
+                {
+                    prop.SetValue(target, value, null);
+                    return true;
+                }
+            }
+            catch { }
+            try
+            {
+                var field = type.GetField(memberName, flags);
+                if (field != null && (value == null || field.FieldType.IsAssignableFrom(value.GetType())))
+                {
+                    field.SetValue(target, value);
+                    return true;
+                }
+            }
+            catch { }
+            return false;
         }
 
         private static bool TrySetMember(Component target, string memberName, object value)
@@ -1243,6 +1362,7 @@ namespace AiMultiToolKit.FuiImporter
         private readonly FuiImportReport _report;
         private readonly StringBuilder _uss = new StringBuilder();
         private int _elementSeq;
+        private readonly Dictionary<string, int> _classNameCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         private string _screenClass;
         private double _screenWidth;
         private double _screenHeight;
@@ -1305,6 +1425,16 @@ namespace AiMultiToolKit.FuiImporter
             _uss.AppendLine("  flex-shrink: 0;");
             _uss.AppendLine("}");
             _uss.AppendLine();
+            _uss.AppendLine(".fui_safe_zone_guide {");
+            _uss.AppendLine("  position: absolute;");
+            _uss.AppendLine("  border-left-width: 2px;");
+            _uss.AppendLine("  border-right-width: 2px;");
+            _uss.AppendLine("  border-top-width: 2px;");
+            _uss.AppendLine("  border-bottom-width: 2px;");
+            _uss.AppendLine("  border-color: rgba(0, 255, 140, 0.55);");
+            _uss.AppendLine("  background-color: rgba(0, 255, 140, 0.04);");
+            _uss.AppendLine("}");
+            _uss.AppendLine();
             _uss.AppendLine(".fui_button {");
             _uss.AppendLine("  padding-left: 0;");
             _uss.AppendLine("  padding-right: 0;");
@@ -1323,13 +1453,68 @@ namespace AiMultiToolKit.FuiImporter
             _uss.AppendLine();
 
             var rootXml = BuildElementXml(root, 1, true, "root", null);
+            var safeZoneXml = BuildSafeZoneGuideXml(1);
             var uxml = new StringBuilder();
             uxml.AppendLine("<ui:UXML xmlns:ui=\"UnityEngine.UIElements\" editor-extension-mode=\"False\">");
             uxml.AppendLine("    <Style src=\"project://database/" + XmlEscape(AiFuiImporterUtility.NormalizeAssetPath(_ussAssetPath)) + "\" />");
             uxml.Append(rootXml);
+            uxml.Append(safeZoneXml);
             uxml.AppendLine("</ui:UXML>");
 
             return new FuiGeneratedScreen { Uxml = uxml.ToString(), Uss = _uss.ToString() };
+        }
+
+
+        private string BuildSemanticUssClassName(string rawName, string type, int index)
+        {
+            var token = AiFuiImporterUtility.SanitizeIdentifier(rawName, string.Empty);
+            token = (token ?? string.Empty).Trim('_');
+            var lower = token.ToLowerInvariant();
+            var typeLower = AiFuiImporterUtility.SanitizeIdentifier(type, "element").ToLowerInvariant();
+            var semantic = false;
+            if (!string.IsNullOrEmpty(lower))
+            {
+                semantic = lower.StartsWith("button_", StringComparison.OrdinalIgnoreCase)
+                    || lower.StartsWith("panel_", StringComparison.OrdinalIgnoreCase)
+                    || lower.StartsWith("progressbar_", StringComparison.OrdinalIgnoreCase)
+                    || lower.StartsWith("progress_bar_", StringComparison.OrdinalIgnoreCase)
+                    || lower.StartsWith("popup_", StringComparison.OrdinalIgnoreCase)
+                    || lower.StartsWith("image_", StringComparison.OrdinalIgnoreCase)
+                    || lower.StartsWith("label_", StringComparison.OrdinalIgnoreCase);
+            }
+            var baseName = semantic ? ("fui_" + lower) : ("fui_element_" + index.ToString("0000", CultureInfo.InvariantCulture));
+            if (string.IsNullOrEmpty(baseName) || baseName == "fui_") baseName = "fui_" + typeLower + "_" + index.ToString("0000", CultureInfo.InvariantCulture);
+            if (!_classNameCounts.ContainsKey(baseName))
+            {
+                _classNameCounts[baseName] = 1;
+                return baseName;
+            }
+            _classNameCounts[baseName] += 1;
+            return baseName + "_" + _classNameCounts[baseName].ToString("0000", CultureInfo.InvariantCulture);
+        }
+
+
+        private string BuildSafeZoneGuideXml(int indent)
+        {
+            var safe = FuiJson.GetObject(_screen, "safeZone");
+            if (safe == null || !FuiJson.GetBool(safe, "enabled", false)) return string.Empty;
+            var rect = FuiJson.GetObject(safe, "rect");
+            if (rect == null) return string.Empty;
+            var x = FuiJson.GetDouble(rect, "x", 0);
+            var y = FuiJson.GetDouble(rect, "y", 0);
+            var w = FuiJson.GetDouble(rect, "width", 0);
+            var h = FuiJson.GetDouble(rect, "height", 0);
+            if (w <= 0 || h <= 0) return string.Empty;
+            var className = "fui_safe_zone_" + AiFuiImporterUtility.SanitizeIdentifier(FuiJson.GetString(_screen, "name", "screen"), "screen");
+            _uss.AppendLine("." + className + " {");
+            _uss.AppendLine("  left: " + Num(x) + "px;");
+            _uss.AppendLine("  top: " + Num(y) + "px;");
+            _uss.AppendLine("  width: " + Num(w) + "px;");
+            _uss.AppendLine("  height: " + Num(h) + "px;");
+            _uss.AppendLine("}");
+            _uss.AppendLine();
+            var pad = new string(' ', indent * 4);
+            return pad + "<ui:VisualElement name=\"fui_safe_zone_guide\" class=\"fui_safe_zone_guide " + className + "\" picking-mode=\"Ignore\" />\n";
         }
 
         private string BuildElementXml(Dictionary<string, object> element, int indent, bool isRoot, string parentLayoutMode, Dictionary<string, object> parentBounds)
@@ -1353,7 +1538,8 @@ namespace AiMultiToolKit.FuiImporter
             var tag = MapUxmlTag(type);
             var rawName = FuiJson.GetString(element, "name", type);
             var name = AiFuiImporterUtility.SanitizeIdentifier(rawName, type + "_" + _elementSeq.ToString(CultureInfo.InvariantCulture));
-            var className = "fui_el_" + (++_elementSeq).ToString("0000", CultureInfo.InvariantCulture);
+            ++_elementSeq;
+            var className = BuildSemanticUssClassName(rawName, type, _elementSeq);
             var classes = new List<string> { "fui_element", className, "fui_type_" + rawType.ToLowerInvariant() };
             if (type != rawType) classes.Add("fui_as_" + type.ToLowerInvariant());
             if (type == "Button") classes.Add("fui_button");
@@ -2232,6 +2418,24 @@ namespace AiMultiToolKit.FuiImporter
             if (string.IsNullOrEmpty(left)) return right;
             if (string.IsNullOrEmpty(right)) return left;
             return left + "/" + right;
+        }
+
+        public static string MakeRelativeAssetUrl(string fromAssetPath, string toAssetPath)
+        {
+            fromAssetPath = NormalizeAssetPath(fromAssetPath);
+            toAssetPath = NormalizeAssetPath(toAssetPath);
+            try
+            {
+                var fromDir = Path.GetDirectoryName(fromAssetPath).Replace("\\", "/");
+                var uriFrom = new Uri((fromDir.EndsWith("/") ? fromDir : fromDir + "/"), UriKind.Relative);
+                var fromAbs = new Uri(Path.GetFullPath(Path.Combine(ProjectRoot, fromDir)).Replace("\\", "/") + "/");
+                var toAbs = new Uri(Path.GetFullPath(Path.Combine(ProjectRoot, toAssetPath)).Replace("\\", "/"));
+                return Uri.UnescapeDataString(fromAbs.MakeRelativeUri(toAbs).ToString()).Replace("\\", "/");
+            }
+            catch
+            {
+                return NormalizeAssetPath(toAssetPath);
+            }
         }
 
         public static string TrimPrefix(string value, string prefix)

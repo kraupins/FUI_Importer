@@ -1,8 +1,10 @@
-# FUI Importer for Unity 6.5
+# AI Multi-Tool Kit FUI Импортёр
 
-Импортирует `.fui` из Figma-плагина в Unity UI Toolkit.
+Unity 6.5+ UPM-пакет для импорта `.fui` из Figma-плагина AI Multi-Tool Kit в Unity UI Toolkit.
 
-Структура импорта:
+## Что создаётся
+
+После импорта создаётся папка:
 
 ```text
 Assets/<PROJECT_NAME>/
@@ -15,6 +17,11 @@ Assets/<PROJECT_NAME>/
   Info/
 ```
 
-В окне импортера есть список импортированных проектов и кнопка полного удаления проекта.
+Префабы не создаются, чтобы не ловить ошибки Unity AssetPreview с PanelRenderer. Создаётся отдельная сцена на каждый экран. Общая сцена со всеми экранами не создаётся.
 
-Минимальная версия Unity: 6000.5.
+## Важно
+
+- UXML и USS остаются обычными Unity assets и продолжают работать после удаления импортёра.
+- PanelRenderer используется в сценах Unity 6.5.
+- RuntimeTheme `.tss` создаётся в `PanelSettings/` и импортирует сгенерированные USS.
+- Если в `.fui` включена Safe Zone, импортёр создаёт guide-элемент safe zone внутри UXML.
