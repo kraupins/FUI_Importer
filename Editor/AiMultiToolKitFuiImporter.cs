@@ -346,12 +346,18 @@ namespace AiMultiToolKit.FuiImporter
                 report.CopiedTextureCount++;
             }
 
+            var textureMetaByAssetPath = new Dictionary<string, FuiAssetMeta>(StringComparer.OrdinalIgnoreCase);
             foreach (var meta in package.AssetMetadata)
             {
                 if (!string.IsNullOrEmpty(meta.Id) && !string.IsNullOrEmpty(meta.Path))
                 {
                     var key = AiFuiImporterUtility.NormalizePackagePath(meta.Path);
-                    if (assetPathMap.ContainsKey(key)) assetPathMap[meta.Id] = assetPathMap[key];
+                    string localTexturePath;
+                    if (assetPathMap.TryGetValue(key, out localTexturePath))
+                    {
+                        assetPathMap[meta.Id] = localTexturePath;
+                        textureMetaByAssetPath[localTexturePath] = meta;
+                    }
                 }
             }
 
@@ -369,7 +375,12 @@ namespace AiMultiToolKit.FuiImporter
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             if (options.ApplyTextureSettings)
             {
-                foreach (var path in assetPathMap.Values) ApplyUiTextureImportSettings(path);
+                foreach (var path in assetPathMap.Values.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    FuiAssetMeta meta;
+                    textureMetaByAssetPath.TryGetValue(path, out meta);
+                    ApplyUiTextureImportSettings(path, meta);
+                }
             }
             foreach (var path in fontPathMap.Values.Distinct(StringComparer.OrdinalIgnoreCase)) ApplyUiFontImportSettings(path);
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
@@ -440,40 +451,96 @@ namespace AiMultiToolKit.FuiImporter
             if (options.OpenFirstUxmlAfterImport && report.GeneratedUxml.Count > 0)
             {
                 var firstUxml = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(report.GeneratedUxml[0]);
-                if (firstUxml != null) EditorApplication.delayCall += () => { AssetDatabase.OpenAsset(firstUxml); TryEnableUiBuilderMatchGameView(); };
+                if (firstUxml != null)
+                {
+                    var w = generatedScreens.Count > 0 ? generatedScreens[0].Width : 0;
+                    var h = generatedScreens.Count > 0 ? generatedScreens[0].Height : 0;
+                    EditorApplication.delayCall += () => { AssetDatabase.OpenAsset(firstUxml); TryEnableUiBuilderMatchGameView(w, h); };
+                }
             }
 
             return report;
         }
 
 
-        private static void TryEnableUiBuilderMatchGameView()
+        private static void TryEnableUiBuilderMatchGameView(double width, double height)
         {
-            // UI Builder stores Canvas options outside of the UXML asset. Unity does not expose
-            // a stable public API for this checkbox, so this is a best-effort reflection pass.
-            try
+            TryEnableUiBuilderMatchGameView((float)Math.Max(1, width), (float)Math.Max(1, height));
+        }
+
+        private static void TryEnableUiBuilderMatchGameView(float width, float height)
+        {
+            // UI Builder stores Canvas options outside UXML. The public manual says Match Game View
+            // is a Canvas checkbox, but Unity doesn't expose a stable public API for it, so this pass
+            // uses guarded reflection and retries while UI Builder finishes opening the document.
+            for (var i = 1; i <= 12; i++)
             {
+                var delay = i;
                 EditorApplication.delayCall += () =>
                 {
-                    try
-                    {
-                        foreach (var window in Resources.FindObjectsOfTypeAll<EditorWindow>())
-                        {
-                            if (window == null) continue;
-                            var type = window.GetType();
-                            var typeName = type.FullName ?? type.Name;
-                            if (typeName.IndexOf("Builder", StringComparison.OrdinalIgnoreCase) < 0) continue;
-                            TrySetMatchingBoolMembers(window, type);
-                            window.Repaint();
-                        }
-                    }
+                    try { ConfigureAllOpenUiBuilderWindows(width, height); }
                     catch { }
                 };
             }
-            catch { }
         }
 
-        private static void TrySetMatchingBoolMembers(object target, Type type)
+        private static void ConfigureAllOpenUiBuilderWindows(float width, float height)
+        {
+            foreach (var window in Resources.FindObjectsOfTypeAll<EditorWindow>())
+            {
+                if (window == null) continue;
+                var type = window.GetType();
+                var typeName = type.FullName ?? type.Name;
+                if (typeName.IndexOf("Builder", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                if (typeName.IndexOf("UI", StringComparison.OrdinalIgnoreCase) < 0 && typeName.IndexOf("Ui", StringComparison.OrdinalIgnoreCase) < 0) continue;
+
+                var visited = new HashSet<object>(ReferenceEqualityComparer.Instance);
+                TryConfigureUiBuilderObject(window, width, height, 0, visited);
+                TryInvokeUiBuilderCanvasMethods(window, type, width, height);
+                window.Repaint();
+            }
+        }
+
+        private static void TryConfigureUiBuilderObject(object target, float width, float height, int depth, HashSet<object> visited)
+        {
+            if (target == null || depth > 5) return;
+            var targetType = target.GetType();
+            if (targetType.IsPrimitive || target is string || target is UnityEngine.Object && !(target is EditorWindow)) return;
+            if (!visited.Add(target)) return;
+
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+            TrySetUiBuilderMembers(target, targetType, width, height);
+
+            foreach (var field in targetType.GetFields(flags))
+            {
+                try
+                {
+                    if (field.FieldType.IsPrimitive || field.FieldType == typeof(string)) continue;
+                    var value = field.GetValue(target);
+                    if (value == null) continue;
+                    var name = (field.Name + " " + field.FieldType.FullName).ToLowerInvariant();
+                    if (name.Contains("canvas") || name.Contains("viewport") || name.Contains("builder") || name.Contains("document"))
+                        TryConfigureUiBuilderObject(value, width, height, depth + 1, visited);
+                }
+                catch { }
+            }
+
+            foreach (var prop in targetType.GetProperties(flags))
+            {
+                try
+                {
+                    if (!prop.CanRead || prop.GetIndexParameters().Length != 0) continue;
+                    if (prop.PropertyType.IsPrimitive || prop.PropertyType == typeof(string)) continue;
+                    var name = (prop.Name + " " + prop.PropertyType.FullName).ToLowerInvariant();
+                    if (!name.Contains("canvas") && !name.Contains("viewport") && !name.Contains("builder") && !name.Contains("document")) continue;
+                    var value = prop.GetValue(target, null);
+                    TryConfigureUiBuilderObject(value, width, height, depth + 1, visited);
+                }
+                catch { }
+            }
+        }
+
+        private static void TrySetUiBuilderMembers(object target, Type type, float width, float height)
         {
             if (target == null || type == null) return;
             var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
@@ -481,9 +548,14 @@ namespace AiMultiToolKit.FuiImporter
             {
                 try
                 {
-                    if (!prop.CanWrite || prop.PropertyType != typeof(bool)) continue;
+                    if (!prop.CanWrite || prop.GetIndexParameters().Length != 0) continue;
                     var key = (prop.Name ?? string.Empty).ToLowerInvariant();
-                    if (key.Contains("match") && key.Contains("game") && key.Contains("view")) prop.SetValue(target, true, null);
+                    if (prop.PropertyType == typeof(bool) && key.Contains("match") && key.Contains("game") && key.Contains("view")) prop.SetValue(target, true, null);
+                    else if ((prop.PropertyType == typeof(float) || prop.PropertyType == typeof(double) || prop.PropertyType == typeof(int)) && key.Contains("canvas"))
+                    {
+                        if (key.Contains("width")) SetNumericProperty(prop, target, width);
+                        else if (key.Contains("height")) SetNumericProperty(prop, target, height);
+                    }
                 }
                 catch { }
             }
@@ -491,12 +563,55 @@ namespace AiMultiToolKit.FuiImporter
             {
                 try
                 {
-                    if (field.FieldType != typeof(bool)) continue;
                     var key = (field.Name ?? string.Empty).ToLowerInvariant();
-                    if (key.Contains("match") && key.Contains("game") && key.Contains("view")) field.SetValue(target, true);
+                    if (field.FieldType == typeof(bool) && key.Contains("match") && key.Contains("game") && key.Contains("view")) field.SetValue(target, true);
+                    else if ((field.FieldType == typeof(float) || field.FieldType == typeof(double) || field.FieldType == typeof(int)) && key.Contains("canvas"))
+                    {
+                        if (key.Contains("width")) SetNumericField(field, target, width);
+                        else if (key.Contains("height")) SetNumericField(field, target, height);
+                    }
                 }
                 catch { }
             }
+        }
+
+        private static void TryInvokeUiBuilderCanvasMethods(object target, Type type, float width, float height)
+        {
+            if (target == null || type == null) return;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+            foreach (var method in type.GetMethods(flags))
+            {
+                try
+                {
+                    var name = (method.Name ?? string.Empty).ToLowerInvariant();
+                    var ps = method.GetParameters();
+                    if (name.Contains("match") && name.Contains("game") && name.Contains("view") && ps.Length == 0) method.Invoke(target, null);
+                    else if (name.Contains("match") && name.Contains("game") && name.Contains("view") && ps.Length == 1 && ps[0].ParameterType == typeof(bool)) method.Invoke(target, new object[] { true });
+                    else if (name.Contains("canvas") && name.Contains("size") && ps.Length == 2) method.Invoke(target, new object[] { Convert.ChangeType(width, ps[0].ParameterType), Convert.ChangeType(height, ps[1].ParameterType) });
+                }
+                catch { }
+            }
+        }
+
+        private static void SetNumericProperty(System.Reflection.PropertyInfo prop, object target, float value)
+        {
+            if (prop.PropertyType == typeof(float)) prop.SetValue(target, value, null);
+            else if (prop.PropertyType == typeof(double)) prop.SetValue(target, (double)value, null);
+            else if (prop.PropertyType == typeof(int)) prop.SetValue(target, Mathf.RoundToInt(value), null);
+        }
+
+        private static void SetNumericField(System.Reflection.FieldInfo field, object target, float value)
+        {
+            if (field.FieldType == typeof(float)) field.SetValue(target, value);
+            else if (field.FieldType == typeof(double)) field.SetValue(target, (double)value);
+            else if (field.FieldType == typeof(int)) field.SetValue(target, Mathf.RoundToInt(value));
+        }
+
+        private sealed class ReferenceEqualityComparer : IEqualityComparer<object>
+        {
+            public static readonly ReferenceEqualityComparer Instance = new ReferenceEqualityComparer();
+            public new bool Equals(object x, object y) { return ReferenceEquals(x, y); }
+            public int GetHashCode(object obj) { return System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj); }
         }
 
         private static string PrepareOutputRoot(string outputRoot, bool overwrite)
@@ -556,17 +671,36 @@ namespace AiMultiToolKit.FuiImporter
             File.WriteAllBytes(absolute, bytes ?? new byte[0]);
         }
 
-        private static void ApplyUiTextureImportSettings(string assetPath)
+        private static void ApplyUiTextureImportSettings(string assetPath, FuiAssetMeta meta)
         {
             AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceSynchronousImport);
             var importer = AssetImporter.GetAtPath(assetPath) as TextureImporter;
             if (importer == null) return;
 
-            importer.textureType = TextureImporterType.Default;
+            // Все FUI-картинки должны быть Sprite (2D and UI), чтобы их можно было
+            // использовать как UI sprites и чтобы 9-slice Border был доступен в Sprite Editor.
+            importer.textureType = TextureImporterType.Sprite;
+            importer.spriteImportMode = SpriteImportMode.Single;
+            importer.spritePixelsPerUnit = 100f;
             importer.npotScale = TextureImporterNPOTScale.None;
             importer.alphaIsTransparency = true;
             importer.mipmapEnabled = false;
             importer.textureCompression = TextureImporterCompression.Uncompressed;
+
+            if (meta != null && meta.HasSpriteBorder)
+            {
+                // Unity TextureImporter.spriteBorder хранит Vector4(left, bottom, right, top).
+                importer.spriteBorder = new Vector4(
+                    Mathf.Max(0, meta.BorderLeft),
+                    Mathf.Max(0, meta.BorderBottom),
+                    Mathf.Max(0, meta.BorderRight),
+                    Mathf.Max(0, meta.BorderTop));
+            }
+            else
+            {
+                importer.spriteBorder = Vector4.zero;
+            }
+
             importer.SaveAndReimport();
         }
 
@@ -664,7 +798,11 @@ namespace AiMultiToolKit.FuiImporter
                 AiFuiImporterUtility.EnsureAssetFolder(folder);
                 var themePath = AiFuiImporterUtility.CombineAssetPath(folder, AiFuiImporterUtility.SanitizeFileName(projectName + "_RuntimeTheme", "FUI_RuntimeTheme") + ".tss");
                 var sb = new StringBuilder();
-                sb.AppendLine("/* Auto-generated FUI runtime theme. Imports generated USS files for UI Toolkit runtime preview. */");
+                sb.AppendLine("/* Auto-generated FUI runtime theme. Built on top of Unity Default Runtime Theme. */");
+                // Важно: пользовательская TSS полностью заменяет themeStyleSheet в PanelSettings.
+                // Чтобы кнопки, поля и базовые runtime-контролы не разваливались, сначала импортируем
+                // встроенную runtime-тему Unity, а уже потом подключаем наши USS.
+                sb.AppendLine("@import url(\"unity-theme://default\");");
                 foreach (var screen in screens)
                 {
                     if (screen == null || string.IsNullOrEmpty(screen.UssPath)) continue;
@@ -1155,11 +1293,21 @@ namespace AiMultiToolKit.FuiImporter
             {
                 var dict = item as Dictionary<string, object>;
                 if (dict == null) continue;
-                yield return new FuiAssetMeta
+                var meta = new FuiAssetMeta
                 {
                     Id = FuiJson.GetString(dict, "id", string.Empty),
                     Path = FuiJson.GetString(dict, "path", string.Empty)
                 };
+                var border = FuiJson.GetObject(dict, "nineSliceBorder") ?? FuiJson.GetObject(FuiJson.GetObject(dict, "sprite"), "border");
+                if (border != null)
+                {
+                    meta.BorderLeft = (float)FuiJson.GetDouble(border, "left", 0);
+                    meta.BorderRight = (float)FuiJson.GetDouble(border, "right", 0);
+                    meta.BorderTop = (float)FuiJson.GetDouble(border, "top", 0);
+                    meta.BorderBottom = (float)FuiJson.GetDouble(border, "bottom", 0);
+                    meta.HasSpriteBorder = meta.BorderLeft > 0 || meta.BorderRight > 0 || meta.BorderTop > 0 || meta.BorderBottom > 0;
+                }
+                yield return meta;
             }
         }
 
@@ -1317,6 +1465,11 @@ namespace AiMultiToolKit.FuiImporter
     {
         public string Id;
         public string Path;
+        public bool HasSpriteBorder;
+        public float BorderLeft;
+        public float BorderRight;
+        public float BorderTop;
+        public float BorderBottom;
     }
 
     internal sealed class FuiFontMeta

@@ -23,4 +23,5 @@ Assets/<PROJECT_NAME>/
 
 - UXML и USS остаются обычными Unity assets и продолжают работать после удаления импортёра.
 - PanelRenderer используется в сценах Unity 6.5.
-- RuntimeTheme `.tss` создаётся в `PanelSettings/` и импортирует сгенерированные USS.
+- RuntimeTheme `.tss` создаётся в `PanelSettings/`, сначала импортирует `unity-theme://default`, затем сгенерированные USS.
+- Все текстуры импортируются как Sprite (2D and UI). Для 9-slice ассетов в TextureImporter ставится Sprite Border.
