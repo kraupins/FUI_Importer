@@ -1,8 +1,8 @@
 {
   "name": "com.aimultitoolkit.fui-importer",
-  "version": "1.0.20",
+  "version": "1.0.18",
   "displayName": "AI Multi-Tool Kit FUI Импортёр",
-  "description": "Русский импортёр .fui из Figma в Unity 6.5 UI Toolkit: исправлена генерация runtime-кода для градиентного текста, Text Settings/Color Gradient Presets, устойчивые шрифты, безопасный RuntimeTheme и защита от попадания rich-text тегов в видимый текст.",
+  "description": "Русский импортёр .fui из Figma в Unity 6.5 UI Toolkit: UXML/USS, отдельные Panel Renderer-сцены, шрифты и tag-based компоненты #button/#panel/#progressbar, Sprite 2D/UI, 9-slice Border, UI Builder Match Game View и безопасный RuntimeTheme без конфликтов между экранами.",
   "unity": "6000.5",
   "author": {
     "name": "AI Multi-Tool Kit"
