@@ -40,7 +40,7 @@ Assets/FUI_Imported/<ProjectName>/
   Textures/       PNG/JPG ассеты
   Fonts/          шрифты из FUI
   PanelSettings/  PanelSettings для Panel Renderer
-  Prefabs/        Panel Renderer-префабы
+  Prefabs/        Panel Renderer-сцены
   Scenes/         общая сцена + отдельная сцена на каждый экран
   Source/         исходные JSON из FUI
 ```

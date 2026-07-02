@@ -69,7 +69,7 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.Space(6);
             EditorGUILayout.LabelField("AI Multi-Tool Kit · FUI → Unity UI Toolkit", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "Импортирует .fui из Figma-плагина и автоматически создаёт готовый Unity UI Toolkit проект: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, Panel Renderer-префабы и Unity-сцены. " +
+                "Импортирует .fui из Figma-плагина и автоматически создаёт готовый Unity UI Toolkit проект: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings и Unity-сцены. Префабы с PanelRenderer не создаются, потому что Unity AssetPreview может выдавать некорректный AABB/NaN для UI Toolkit renderer-prefab assets. " +
                 "После импорта этот пакет можно удалить: созданный UI остаётся на стандартном Unity UI Toolkit.",
                 MessageType.Info);
 
@@ -89,7 +89,7 @@ namespace AiMultiToolKit.FuiImporter
             EditorGUILayout.LabelField("Куда импортировать", EditorStyles.boldLabel);
             _outputRoot = EditorGUILayout.TextField("Папка вывода", _outputRoot);
             EditorGUILayout.HelpBox(
-                "Все этапы включены автоматически: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, Panel Renderer-префабы и Unity-сцены.",
+                "Все этапы включены автоматически: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings и Unity-сцены. Префабы с PanelRenderer не создаются, потому что Unity AssetPreview может выдавать некорректный AABB/NaN для UI Toolkit renderer-prefab assets.",
                 MessageType.None);
 
             EditorGUILayout.Space(10);
@@ -133,7 +133,6 @@ namespace AiMultiToolKit.FuiImporter
                 "Textures/* — картинки, которые подключаются в USS через background-image\n" +
                 "Fonts/* — шрифты из .fui, если они были упакованы\n" +
                 "PanelSettings/* — настройки панели UI Toolkit\n" +
-                "Prefabs/* — готовые Panel Renderer-префабы\n" +
                 "Scenes/* — готовая сцена со всеми экранами и отдельная сцена на каждый экран\n" +
                 "Source/* — исходные JSON для проверки и отладки",
                 MessageType.None);
@@ -155,7 +154,7 @@ namespace AiMultiToolKit.FuiImporter
                     CreatePackageSubfolder = true,
                     ApplyTextureSettings = true,
                     CreatePanelSettings = true,
-                    CreateScreenPrefabs = true,
+                    CreateScreenPrefabs = false,
                     CreateSceneAssets = true,
                     AddScreensToOpenScene = false,
                     OpenFirstUxmlAfterImport = true
@@ -181,7 +180,7 @@ namespace AiMultiToolKit.FuiImporter
         public bool CreatePackageSubfolder = true;
         public bool ApplyTextureSettings = true;
         public bool CreatePanelSettings = true;
-        public bool CreateScreenPrefabs = true;
+        public bool CreateScreenPrefabs = false;
         public bool CreateSceneAssets = true;
         public bool AddScreensToOpenScene = false;
         public bool OpenFirstUxmlAfterImport = true;
@@ -569,37 +568,11 @@ namespace AiMultiToolKit.FuiImporter
 
         private static void CreateScreenPrefabs(string outputRoot, List<FuiGeneratedScreenAsset> screens, PanelSettings panelSettings, FuiImportReport report)
         {
-            var folder = AiFuiImporterUtility.CombineAssetPath(outputRoot, "Prefabs");
-            AiFuiImporterUtility.EnsureAssetFolder(folder);
-            if (screens == null) return;
-
-            foreach (var screen in screens)
-            {
-                if (screen == null) continue;
-                var visualTree = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(screen.UxmlPath);
-                if (visualTree == null)
-                {
-                    AddReportWarning(report, "Не удалось загрузить созданный UXML как VisualTreeAsset: " + screen.UxmlPath);
-                    continue;
-                }
-
-                var prefabPath = AiFuiImporterUtility.CombineAssetPath(folder, screen.Name + ".prefab");
-                var go = CreateUiToolkitPanelObject(screen, panelSettings, 0, false, report);
-                if (go == null) continue;
-                try
-                {
-                    PrefabUtility.SaveAsPrefabAsset(go, prefabPath);
-                    if (report != null) report.GeneratedPrefabs.Add(prefabPath);
-                }
-                finally
-                {
-                    if (go != null)
-                    {
-                        go.SetActive(false);
-                        UnityEngine.Object.DestroyImmediate(go);
-                    }
-                }
-            }
+            // В Unity 6.5 PanelRenderer внутри prefab asset может ломать AssetPreviewUpdater:
+            // Invalid worldAABB / localAABB / Preview Scene Camera NaN.
+            // Поэтому importer создаёт готовые сцены с PanelRenderer, а prefab assets не генерирует.
+            // Сгенерированные UXML/USS/PanelSettings полностью рабочие и не зависят от этого пакета.
+            AddReportWarning(report, "Префабы с PanelRenderer не созданы: в Unity 6.5 preview префабов может выдавать Invalid AABB/NaN. Используйте созданные сцены или добавьте PanelRenderer вручную к нужному экрану.");
         }
 
 
