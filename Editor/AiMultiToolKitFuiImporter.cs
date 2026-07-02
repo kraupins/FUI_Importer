@@ -798,17 +798,12 @@ namespace AiMultiToolKit.FuiImporter
                 AiFuiImporterUtility.EnsureAssetFolder(folder);
                 var themePath = AiFuiImporterUtility.CombineAssetPath(folder, AiFuiImporterUtility.SanitizeFileName(projectName + "_RuntimeTheme", "FUI_RuntimeTheme") + ".tss");
                 var sb = new StringBuilder();
-                sb.AppendLine("/* Auto-generated FUI runtime theme. Built on top of Unity Default Runtime Theme. */");
-                // Важно: пользовательская TSS полностью заменяет themeStyleSheet в PanelSettings.
-                // Чтобы кнопки, поля и базовые runtime-контролы не разваливались, сначала импортируем
-                // встроенную runtime-тему Unity, а уже потом подключаем наши USS.
+                sb.AppendLine("/* Auto-generated FUI runtime theme. */");
+                sb.AppendLine("/* ВАЖНО: RuntimeTheme должен быть базовой Unity-темой, а не контейнером всех экранных USS. */");
+                sb.AppendLine("/* Экранные USS уже подключаются напрямую внутри каждого UXML через <Style>. */");
+                sb.AppendLine("/* Если импортировать все USS сюда, одинаковые fallback-классы разных экранов начинают конфликтовать: */");
+                sb.AppendLine("/* например .fui_element_0001 из loading может переопределить .fui_element_0001 из main_menu. */");
                 sb.AppendLine("@import url(\"unity-theme://default\");");
-                foreach (var screen in screens)
-                {
-                    if (screen == null || string.IsNullOrEmpty(screen.UssPath)) continue;
-                    var relative = AiFuiImporterUtility.MakeRelativeAssetUrl(themePath, screen.UssPath);
-                    sb.AppendLine("@import url(\"" + relative.Replace("\\", "/") + "\");");
-                }
                 WriteTextAsset(themePath, sb.ToString());
                 AssetDatabase.ImportAsset(themePath, ImportAssetOptions.ForceSynchronousImport);
                 var theme = AssetDatabase.LoadAssetAtPath<ThemeStyleSheet>(themePath);
@@ -1754,7 +1749,10 @@ namespace AiMultiToolKit.FuiImporter
                 || scenario == "ABSOLUTE_FALLBACK"
                 || scenario.StartsWith("MODAL_", StringComparison.OrdinalIgnoreCase);
 
-            _uss.AppendLine("." + className + " {");
+            if (isRoot)
+                _uss.AppendLine("." + className + " {");
+            else
+                _uss.AppendLine("." + _screenClass + " ." + className + " {");
 
             if (isRoot)
             {

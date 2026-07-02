@@ -25,3 +25,8 @@ Assets/<PROJECT_NAME>/
 - PanelRenderer используется в сценах Unity 6.5.
 - RuntimeTheme `.tss` создаётся в `PanelSettings/`, сначала импортирует `unity-theme://default`, затем сгенерированные USS.
 - Все текстуры импортируются как Sprite (2D and UI). Для 9-slice ассетов в TextureImporter ставится Sprite Border.
+
+
+## Исправление 1.0.17
+
+RuntimeTheme теперь импортирует только `unity-theme://default`, а экранные USS остаются подключёнными напрямую в соответствующих UXML. Это убирает конфликты классов между экранами, когда фон или layout из loading применялся к main menu. Дополнительно селекторы элементов в USS теперь скоупятся через root-класс экрана.
