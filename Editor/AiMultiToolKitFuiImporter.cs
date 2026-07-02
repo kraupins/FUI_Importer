@@ -812,40 +812,65 @@ namespace AiMultiToolKit.FuiImporter
                 if (textSettings == null) return null;
 
                 var so = new SerializedObject(textSettings);
-                // Unity Text Settings expects paths relative to a Resources folder. The importer stores
-                // gradients in Assets/<Project>/Resources/Color Gradient Presets so <gradient="name">
-                // tags can resolve reliably after switching Runtime Theme in UI Builder.
+                // Unity 6.5 resolves <gradient="name"> through the Panel Text Settings path.
+                // The Inspector path must point to the real folder under Resources, not just the folder name.
+                // Assets/<Project>/Resources/Color Gradient Presets is the folder used by the importer.
+                var resourcesFolder = AiFuiImporterUtility.CombineAssetPath(outputRoot, "Resources");
+                var colorGradientPresetPath = AiFuiImporterUtility.NormalizeAssetPath(
+                    AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Color Gradient Presets"));
+                var fontAssetPath = AiFuiImporterUtility.NormalizeAssetPath(
+                    AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Fonts & Materials"));
+                var spriteAssetPath = AiFuiImporterUtility.NormalizeAssetPath(
+                    AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Sprite Assets"));
+                var styleSheetPath = AiFuiImporterUtility.NormalizeAssetPath(
+                    AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Style Sheets"));
+
                 TrySetSerializedStringAny(so, new[]
                 {
                     "m_ColorGradientPresetsPath",
                     "m_ColorGradientPresetPath",
                     "m_ColorGradientPath",
                     "m_TextColorGradientPresetsPath",
+                    "m_ColorGradientPresetAssetsPath",
+                    "m_ColorGradientPresetAssetPath",
+                    "m_DefaultColorGradientPresetsPath",
+                    "m_DefaultColorGradientPresetPath",
                     "colorGradientPresetsPath",
                     "colorGradientPresetPath",
-                    "textColorGradientPresetsPath"
-                }, "Color Gradient Presets");
+                    "colorGradientPath",
+                    "textColorGradientPresetsPath",
+                    "defaultColorGradientPresetsPath",
+                    "defaultColorGradientPresetPath"
+                }, colorGradientPresetPath);
+                TrySetSerializedStringPropertiesContaining(so, new[] { "gradient" }, new[] { "path" }, colorGradientPresetPath);
+
                 TrySetSerializedStringAny(so, new[]
                 {
                     "m_FontAssetPath",
                     "m_FontAssetsPath",
+                    "m_DefaultFontAssetPath",
                     "fontAssetPath",
-                    "fontAssetsPath"
-                }, "Fonts & Materials");
+                    "fontAssetsPath",
+                    "defaultFontAssetPath"
+                }, fontAssetPath);
                 TrySetSerializedStringAny(so, new[]
                 {
                     "m_SpriteAssetPath",
                     "m_SpriteAssetsPath",
+                    "m_DefaultSpriteAssetPath",
                     "spriteAssetPath",
-                    "spriteAssetsPath"
-                }, "Sprite Assets");
+                    "spriteAssetsPath",
+                    "defaultSpriteAssetPath"
+                }, spriteAssetPath);
                 TrySetSerializedStringAny(so, new[]
                 {
                     "m_StyleSheetPath",
                     "m_StyleSheetsPath",
+                    "m_DefaultStyleSheetPath",
                     "styleSheetPath",
-                    "styleSheetsPath"
-                }, "Style Sheets");
+                    "styleSheetsPath",
+                    "defaultStyleSheetPath"
+                }, styleSheetPath);
                 so.ApplyModifiedPropertiesWithoutUndo();
 
                 if (existing == null) AssetDatabase.CreateAsset(textSettings, assetPath);
@@ -1205,6 +1230,48 @@ namespace AiMultiToolKit.FuiImporter
                 changed = true;
             }
             return changed;
+        }
+
+        private static bool TrySetSerializedStringPropertiesContaining(SerializedObject so, IEnumerable<string> requiredNameParts, IEnumerable<string> requiredPathParts, string value)
+        {
+            if (so == null) return false;
+            var changed = false;
+            var iterator = so.GetIterator();
+            var enterChildren = true;
+            while (iterator.NextVisible(enterChildren))
+            {
+                enterChildren = false;
+                if (iterator.propertyType != SerializedPropertyType.String) continue;
+                var path = (iterator.propertyPath ?? string.Empty).ToLowerInvariant();
+                var displayName = (iterator.displayName ?? string.Empty).ToLowerInvariant();
+                if (!ContainsAll(path + " " + displayName, requiredNameParts)) continue;
+                if (!ContainsAny(path + " " + displayName, requiredPathParts)) continue;
+                iterator.stringValue = value ?? string.Empty;
+                changed = true;
+            }
+            return changed;
+        }
+
+        private static bool ContainsAll(string text, IEnumerable<string> parts)
+        {
+            if (parts == null) return true;
+            foreach (var part in parts)
+            {
+                if (string.IsNullOrEmpty(part)) continue;
+                if (text == null || text.IndexOf(part.ToLowerInvariant(), StringComparison.Ordinal) < 0) return false;
+            }
+            return true;
+        }
+
+        private static bool ContainsAny(string text, IEnumerable<string> parts)
+        {
+            if (parts == null) return true;
+            foreach (var part in parts)
+            {
+                if (string.IsNullOrEmpty(part)) continue;
+                if (text != null && text.IndexOf(part.ToLowerInvariant(), StringComparison.Ordinal) >= 0) return true;
+            }
+            return false;
         }
 
         private static void CreateSceneObjects(string projectName, List<FuiGeneratedScreenAsset> screens, PanelSettings panelSettings, FuiImportReport report)

@@ -1,3 +1,14 @@
+# FUI Importer 1.0.22 — gradient path fix
+
+База: рабочая 1.0.18/1.0.21 без изменения архитектуры элементов.
+
+Фикс:
+- TextCore Color Gradient presets остаются в `Assets/<Project>/Resources/Color Gradient Presets`.
+- `MY_GAME_DESIGN_TextSettings` теперь получает полный asset path к этой папке, а не только `Color Gradient Presets`.
+- UXML по-прежнему использует официальный Unity rich text `<color=white><gradient="preset">Text</gradient></color>` и `enable-rich-text="true"`.
+- Цвета градиентных preset принудительно opaque, чтобы текст не становился прозрачным из-за alpha=0 в экспорте.
+- Добавлена более жёсткая запись path через known fields + проход по serialized string properties с `gradient` + `path`, чтобы пережить разные названия полей Unity 6.5.
+
 # AI Multi-Tool Kit FUI Импортёр
 
 Unity 6.5+ UPM-пакет для импорта `.fui` из Figma-плагина AI Multi-Tool Kit в Unity UI Toolkit.
