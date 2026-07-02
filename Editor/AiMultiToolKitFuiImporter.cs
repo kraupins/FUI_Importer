@@ -398,7 +398,7 @@ namespace AiMultiToolKit.FuiImporter
                 var uxmlPath = AiFuiImporterUtility.CombineAssetPath(uxmlRoot, screenName + ".uxml");
                 var sourcePath = AiFuiImporterUtility.CombineAssetPath(infoRoot, "screen_" + screenName + ".json");
 
-                var textGradientFolder = AiFuiImporterUtility.CombineAssetPath(AiFuiImporterUtility.CombineAssetPath(outputRoot, "Resources"), "Text Color Gradients");
+                var textGradientFolder = AiFuiImporterUtility.CombineAssetPath(AiFuiImporterUtility.CombineAssetPath(outputRoot, "Resources"), "Color Gradient Presets");
                 AiFuiImporterUtility.EnsureAssetFolder(textGradientFolder);
                 var generator = new FuiUiToolkitGenerator(screen, ussPath, assetPathMap, fontPathMap, package.FontMetadata, textGradientFolder, report);
                 var generated = generator.Generate();
@@ -422,12 +422,13 @@ namespace AiMultiToolKit.FuiImporter
 
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
 
+            var textSettings = CreateTextSettingsAsset(outputRoot, projectName, report);
             var runtimeTheme = CreateRuntimeThemeStyleSheet(outputRoot, projectName, generatedScreens, report);
 
             PanelSettings panelSettings = null;
             if (options.CreatePanelSettings || options.CreateScreenPrefabs || options.CreateSceneAssets || options.AddScreensToOpenScene)
             {
-                panelSettings = CreatePanelSettingsAsset(outputRoot, projectName, generatedScreens, runtimeTheme, report);
+                panelSettings = CreatePanelSettingsAsset(outputRoot, projectName, generatedScreens, runtimeTheme, textSettings, report);
             }
 
             if (options.CreateScreenPrefabs)
@@ -789,6 +790,76 @@ namespace AiMultiToolKit.FuiImporter
 
 
 
+
+        private static UnityEngine.Object CreateTextSettingsAsset(string outputRoot, string projectName, FuiImportReport report)
+        {
+            try
+            {
+                var textSettingsType = Type.GetType("UnityEngine.UIElements.TextSettings, UnityEngine.UIElementsModule")
+                    ?? Type.GetType("UnityEngine.UIElements.PanelTextSettings, UnityEngine.UIElementsModule")
+                    ?? AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType("UnityEngine.UIElements.TextSettings") ?? a.GetType("UnityEngine.UIElements.PanelTextSettings")).FirstOrDefault(t => t != null);
+                if (textSettingsType == null)
+                {
+                    AddReportWarning(report, "Unity Text Settings asset не создан: тип UnityEngine.UIElements.TextSettings не найден в этой версии Unity.");
+                    return null;
+                }
+
+                var folder = AiFuiImporterUtility.CombineAssetPath(outputRoot, "PanelSettings");
+                AiFuiImporterUtility.EnsureAssetFolder(folder);
+                var assetPath = AiFuiImporterUtility.CombineAssetPath(folder, AiFuiImporterUtility.SanitizeFileName(projectName + "_TextSettings", "FUI_TextSettings") + ".asset");
+                var existing = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(assetPath);
+                var textSettings = existing != null ? existing : ScriptableObject.CreateInstance(textSettingsType);
+                if (textSettings == null) return null;
+
+                var so = new SerializedObject(textSettings);
+                // Unity Text Settings expects paths relative to a Resources folder. The importer stores
+                // gradients in Assets/<Project>/Resources/Color Gradient Presets so <gradient="name">
+                // tags can resolve reliably after switching Runtime Theme in UI Builder.
+                TrySetSerializedStringAny(so, new[]
+                {
+                    "m_ColorGradientPresetsPath",
+                    "m_ColorGradientPresetPath",
+                    "m_ColorGradientPath",
+                    "m_TextColorGradientPresetsPath",
+                    "colorGradientPresetsPath",
+                    "colorGradientPresetPath",
+                    "textColorGradientPresetsPath"
+                }, "Color Gradient Presets");
+                TrySetSerializedStringAny(so, new[]
+                {
+                    "m_FontAssetPath",
+                    "m_FontAssetsPath",
+                    "fontAssetPath",
+                    "fontAssetsPath"
+                }, "Fonts & Materials");
+                TrySetSerializedStringAny(so, new[]
+                {
+                    "m_SpriteAssetPath",
+                    "m_SpriteAssetsPath",
+                    "spriteAssetPath",
+                    "spriteAssetsPath"
+                }, "Sprite Assets");
+                TrySetSerializedStringAny(so, new[]
+                {
+                    "m_StyleSheetPath",
+                    "m_StyleSheetsPath",
+                    "styleSheetPath",
+                    "styleSheetsPath"
+                }, "Style Sheets");
+                so.ApplyModifiedPropertiesWithoutUndo();
+
+                if (existing == null) AssetDatabase.CreateAsset(textSettings, assetPath);
+                else EditorUtility.SetDirty(textSettings);
+                AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceSynchronousImport);
+                return AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(assetPath) ?? textSettings;
+            }
+            catch (Exception ex)
+            {
+                AddReportWarning(report, "Не удалось создать Unity Text Settings asset: " + ex.Message);
+                return null;
+            }
+        }
+
         private static ThemeStyleSheet CreateRuntimeThemeStyleSheet(string outputRoot, string projectName, List<FuiGeneratedScreenAsset> screens, FuiImportReport report)
         {
             try
@@ -817,7 +888,7 @@ namespace AiMultiToolKit.FuiImporter
             }
         }
 
-        private static PanelSettings CreatePanelSettingsAsset(string outputRoot, string projectName, List<FuiGeneratedScreenAsset> screens, ThemeStyleSheet runtimeTheme, FuiImportReport report)
+        private static PanelSettings CreatePanelSettingsAsset(string outputRoot, string projectName, List<FuiGeneratedScreenAsset> screens, ThemeStyleSheet runtimeTheme, UnityEngine.Object textSettings, FuiImportReport report)
         {
             var folder = AiFuiImporterUtility.CombineAssetPath(outputRoot, "PanelSettings");
             AiFuiImporterUtility.EnsureAssetFolder(folder);
@@ -842,6 +913,14 @@ namespace AiMultiToolKit.FuiImporter
                 var soTheme = new SerializedObject(panelSettings);
                 TrySetSerializedObjectReference(soTheme, "m_ThemeStyleSheet", runtimeTheme);
                 soTheme.ApplyModifiedPropertiesWithoutUndo();
+            }
+            if (textSettings != null)
+            {
+                TrySetMemberObject(panelSettings, "textSettings", textSettings);
+                var soText = new SerializedObject(panelSettings);
+                TrySetSerializedObjectReference(soText, "m_TextSettings", textSettings);
+                TrySetSerializedObjectReference(soText, "textSettings", textSettings);
+                soText.ApplyModifiedPropertiesWithoutUndo();
             }
             EditorUtility.SetDirty(panelSettings);
             AssetDatabase.SaveAssets();
@@ -1109,6 +1188,22 @@ namespace AiMultiToolKit.FuiImporter
             if (prop == null) return false;
             if (prop.propertyType == SerializedPropertyType.Integer) { prop.intValue = value; return true; }
             return false;
+        }
+
+
+        private static bool TrySetSerializedStringAny(SerializedObject so, IEnumerable<string> propertyNames, string value)
+        {
+            if (so == null || propertyNames == null) return false;
+            var changed = false;
+            foreach (var propertyName in propertyNames)
+            {
+                if (string.IsNullOrEmpty(propertyName)) continue;
+                var prop = so.FindProperty(propertyName);
+                if (prop == null || prop.propertyType != SerializedPropertyType.String) continue;
+                prop.stringValue = value ?? string.Empty;
+                changed = true;
+            }
+            return changed;
         }
 
         private static void CreateSceneObjects(string projectName, List<FuiGeneratedScreenAsset> screens, PanelSettings panelSettings, FuiImportReport report)
@@ -1681,6 +1776,11 @@ namespace AiMultiToolKit.FuiImporter
                     .Append("max-height: ").Append(Num(_screenHeight)).Append("px; ")
                     .Append("flex-grow: 0; flex-shrink: 0; position: relative; overflow: hidden;\"");
             }
+            else
+            {
+                var inlineFallback = BuildCriticalInlineStyle(element, type);
+                if (!string.IsNullOrEmpty(inlineFallback)) attrs.Append(" style=\"").Append(XmlEscape(inlineFallback)).Append("\"");
+            }
 
             var text = !string.IsNullOrWhiteSpace(ownText) ? ownText : FindVisibleText(element);
             var hasTextGradient = FuiJson.GetObject(style, "textGradient") != null;
@@ -1726,6 +1826,44 @@ namespace AiMultiToolKit.FuiImporter
             }
             sb.Append(pad).Append("</").Append(tag).AppendLine(">");
             return sb.ToString();
+        }
+
+
+        private string BuildCriticalInlineStyle(Dictionary<string, object> element, string type)
+        {
+            if (element == null) return string.Empty;
+            var parts = new List<string>();
+            var assetRef = FuiJson.GetObject(element, "assetRef");
+            var assetPath = ResolveAssetPath(assetRef);
+            if (!string.IsNullOrEmpty(assetPath))
+            {
+                parts.Add("background-image: url(\"project://database/" + CssUrl(AiFuiImporterUtility.NormalizeAssetPath(assetPath)) + "\")");
+                parts.Add("-unity-background-scale-mode: stretch-to-fill");
+            }
+
+            var style = FuiJson.GetObject(element, "style");
+            if (style != null && string.Equals(type, "Label", StringComparison.OrdinalIgnoreCase))
+            {
+                var family = FuiJson.GetString(style, "fontFamily", string.Empty);
+                var fontStyle = FuiJson.GetString(style, "fontStyle", string.Empty);
+                var fontAssetPath = ResolveFontAssetPath(family, fontStyle);
+                if (!string.IsNullOrEmpty(fontAssetPath))
+                {
+                    var normalizedFontAssetPath = AiFuiImporterUtility.NormalizeAssetPath(fontAssetPath);
+                    if (normalizedFontAssetPath.EndsWith(".asset", StringComparison.OrdinalIgnoreCase))
+                        parts.Add("-unity-font-definition: url(\"project://database/" + CssUrl(normalizedFontAssetPath) + "\")");
+                    else
+                        parts.Add("-unity-font: url(\"project://database/" + CssUrl(normalizedFontAssetPath) + "\")");
+                }
+
+                if (FuiJson.GetObject(style, "textGradient") != null) parts.Add("color: rgb(255, 255, 255)");
+                else
+                {
+                    var color = FuiJson.GetObject(style, "color");
+                    if (color != null) parts.Add("color: " + ColorToCss(color));
+                }
+            }
+            return string.Join("; ", parts) + (parts.Count > 0 ? ";" : string.Empty);
         }
 
         private void AppendStyle(Dictionary<string, object> element, string className, string type, bool isRoot, string parentLayoutMode, Dictionary<string, object> parentBounds)
@@ -2023,7 +2161,7 @@ namespace AiMultiToolKit.FuiImporter
             var presetName = EnsureTextGradientPreset(gradient, elementName);
             if (string.IsNullOrEmpty(presetName)) return raw;
             // UI Toolkit uses TextCore rich text gradient tags. The value is XML-escaped later.
-            return "<color=white><gradient=\"" + presetName + "\">" + raw + "</gradient></color>";
+            return "<color=#FFFFFFFF><gradient=\"" + presetName + "\">" + raw + "</gradient></color>";
         }
 
         private string EnsureTextGradientPreset(Dictionary<string, object> gradient, string elementName)
@@ -2043,6 +2181,8 @@ namespace AiMultiToolKit.FuiImporter
                 ApplyTextGradientColors(obj, gradient);
                 if (existing == null) AssetDatabase.CreateAsset(obj, assetPath);
                 else EditorUtility.SetDirty(obj);
+                AssetDatabase.SaveAssets();
+                AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceSynchronousImport);
                 return safeName;
             }
             catch (Exception ex)
@@ -2237,19 +2377,28 @@ namespace AiMultiToolKit.FuiImporter
         private void AppendAssetBackground(Dictionary<string, object> assetRef)
         {
             if (assetRef == null) return;
-            var path = FuiJson.GetString(assetRef, "path", string.Empty);
-            var id = FuiJson.GetString(assetRef, "id", string.Empty);
-            var resolved = string.Empty;
-            if (!string.IsNullOrEmpty(path)) _assetPathMap.TryGetValue(AiFuiImporterUtility.NormalizePackagePath(path), out resolved);
-            if (string.IsNullOrEmpty(resolved) && !string.IsNullOrEmpty(id)) _assetPathMap.TryGetValue(id, out resolved);
+            var resolved = ResolveAssetPath(assetRef);
             if (string.IsNullOrEmpty(resolved))
             {
+                var path = FuiJson.GetString(assetRef, "path", string.Empty);
+                var id = FuiJson.GetString(assetRef, "id", string.Empty);
                 AddWarning("Не найдена текстура для assetRef " + (path == string.Empty ? id : path));
                 return;
             }
 
             _uss.AppendLine("  background-image: url(\"project://database/" + CssUrl(AiFuiImporterUtility.NormalizeAssetPath(resolved)) + "\");");
             _uss.AppendLine("  -unity-background-scale-mode: stretch-to-fill;");
+        }
+
+        private string ResolveAssetPath(Dictionary<string, object> assetRef)
+        {
+            if (assetRef == null) return string.Empty;
+            var path = FuiJson.GetString(assetRef, "path", string.Empty);
+            var id = FuiJson.GetString(assetRef, "id", string.Empty);
+            var resolved = string.Empty;
+            if (!string.IsNullOrEmpty(path)) _assetPathMap.TryGetValue(AiFuiImporterUtility.NormalizePackagePath(path), out resolved);
+            if (string.IsNullOrEmpty(resolved) && !string.IsNullOrEmpty(id)) _assetPathMap.TryGetValue(id, out resolved);
+            return resolved ?? string.Empty;
         }
 
         private static bool IsTextRasterized(Dictionary<string, object> element)
