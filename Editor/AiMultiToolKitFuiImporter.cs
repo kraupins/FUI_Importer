@@ -18,7 +18,6 @@ namespace AiMultiToolKit.FuiImporter
     public sealed class AiFuiImporterWindow : EditorWindow
     {
         private string _fuiPath = string.Empty;
-        private string _outputRoot = "Assets";
         private Vector2 _scroll;
         private FuiImportReport _lastReport;
         private string _lastError = string.Empty;
@@ -87,9 +86,8 @@ namespace AiMultiToolKit.FuiImporter
 
             EditorGUILayout.Space(8);
             EditorGUILayout.LabelField("Куда импортировать", EditorStyles.boldLabel);
-            _outputRoot = EditorGUILayout.TextField("Папка вывода", _outputRoot);
             EditorGUILayout.HelpBox(
-                "Все этапы включены автоматически: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, RuntimeTheme и отдельные Unity-сцены. Префабы с PanelRenderer не создаются, потому что Unity AssetPreview может выдавать некорректный AABB/NaN для UI Toolkit renderer-prefab assets.",
+                "Папка вывода всегда определяется автоматически: Assets/<название проекта из .fui>. Внутри будут UXML, USS, Textures, Fonts, PanelSettings, Scenes и Info.",
                 MessageType.None);
 
             EditorGUILayout.Space(10);
@@ -146,7 +144,7 @@ namespace AiMultiToolKit.FuiImporter
 
         private void DrawImportedProjectsCleanup()
         {
-            var projects = AiFuiImporter.FindImportedProjects(_outputRoot);
+            var projects = AiFuiImporter.FindImportedProjects("Assets");
             EditorGUILayout.Space(10);
             EditorGUILayout.LabelField("Импортированные FUI проекты", EditorStyles.boldLabel);
             if (projects.Count == 0)
@@ -169,6 +167,9 @@ namespace AiMultiToolKit.FuiImporter
                         if (EditorUtility.DisplayDialog("Удалить FUI проект", "Полностью удалить папку проекта?\n" + project.AssetPath, "Удалить", "Отмена"))
                         {
                             AiFuiImporter.DeleteImportedProject(project.AssetPath);
+                            if (_lastReport != null && string.Equals(AiFuiImporterUtility.NormalizeAssetPath(_lastReport.OutputRootAssetPath), AiFuiImporterUtility.NormalizeAssetPath(project.AssetPath), StringComparison.OrdinalIgnoreCase)) _lastReport = null;
+                            _lastError = string.Empty;
+                            Repaint();
                             GUIUtility.ExitGUI();
                         }
                     }
@@ -185,7 +186,7 @@ namespace AiMultiToolKit.FuiImporter
             {
                 var options = new FuiImportOptions
                 {
-                    OutputRootAssetPath = _outputRoot,
+                    OutputRootAssetPath = "Assets",
                     OverwriteExisting = true,
                     CreatePackageSubfolder = true,
                     ApplyTextureSettings = true,
@@ -307,7 +308,8 @@ namespace AiMultiToolKit.FuiImporter
 
             var package = FuiPackage.Read(fuiFilePath);
             var projectName = AiFuiImporterUtility.SanitizeFileName(package.ProjectName, Path.GetFileNameWithoutExtension(fuiFilePath));
-            var outputRoot = options.CreatePackageSubfolder ? AiFuiImporterUtility.CombineAssetPath(normalizedRoot, projectName) : normalizedRoot;
+            // FUI projects are always imported to Assets/<ProjectName>. The output folder is not user-configurable.
+            var outputRoot = AiFuiImporterUtility.CombineAssetPath("Assets", projectName);
             outputRoot = PrepareOutputRoot(outputRoot, options.OverwriteExisting);
 
             var report = new FuiImportReport
@@ -1425,16 +1427,6 @@ namespace AiMultiToolKit.FuiImporter
             _uss.AppendLine("  flex-shrink: 0;");
             _uss.AppendLine("}");
             _uss.AppendLine();
-            _uss.AppendLine(".fui_safe_zone_guide {");
-            _uss.AppendLine("  position: absolute;");
-            _uss.AppendLine("  border-left-width: 2px;");
-            _uss.AppendLine("  border-right-width: 2px;");
-            _uss.AppendLine("  border-top-width: 2px;");
-            _uss.AppendLine("  border-bottom-width: 2px;");
-            _uss.AppendLine("  border-color: rgba(0, 255, 140, 0.55);");
-            _uss.AppendLine("  background-color: rgba(0, 255, 140, 0.04);");
-            _uss.AppendLine("}");
-            _uss.AppendLine();
             _uss.AppendLine(".fui_button {");
             _uss.AppendLine("  padding-left: 0;");
             _uss.AppendLine("  padding-right: 0;");
@@ -1453,12 +1445,10 @@ namespace AiMultiToolKit.FuiImporter
             _uss.AppendLine();
 
             var rootXml = BuildElementXml(root, 1, true, "root", null);
-            var safeZoneXml = BuildSafeZoneGuideXml(1);
             var uxml = new StringBuilder();
             uxml.AppendLine("<ui:UXML xmlns:ui=\"UnityEngine.UIElements\" editor-extension-mode=\"False\">");
             uxml.AppendLine("    <Style src=\"project://database/" + XmlEscape(AiFuiImporterUtility.NormalizeAssetPath(_ussAssetPath)) + "\" />");
             uxml.Append(rootXml);
-            uxml.Append(safeZoneXml);
             uxml.AppendLine("</ui:UXML>");
 
             return new FuiGeneratedScreen { Uxml = uxml.ToString(), Uss = _uss.ToString() };
@@ -1493,29 +1483,6 @@ namespace AiMultiToolKit.FuiImporter
             return baseName + "_" + _classNameCounts[baseName].ToString("0000", CultureInfo.InvariantCulture);
         }
 
-
-        private string BuildSafeZoneGuideXml(int indent)
-        {
-            var safe = FuiJson.GetObject(_screen, "safeZone");
-            if (safe == null || !FuiJson.GetBool(safe, "enabled", false)) return string.Empty;
-            var rect = FuiJson.GetObject(safe, "rect");
-            if (rect == null) return string.Empty;
-            var x = FuiJson.GetDouble(rect, "x", 0);
-            var y = FuiJson.GetDouble(rect, "y", 0);
-            var w = FuiJson.GetDouble(rect, "width", 0);
-            var h = FuiJson.GetDouble(rect, "height", 0);
-            if (w <= 0 || h <= 0) return string.Empty;
-            var className = "fui_safe_zone_" + AiFuiImporterUtility.SanitizeIdentifier(FuiJson.GetString(_screen, "name", "screen"), "screen");
-            _uss.AppendLine("." + className + " {");
-            _uss.AppendLine("  left: " + Num(x) + "px;");
-            _uss.AppendLine("  top: " + Num(y) + "px;");
-            _uss.AppendLine("  width: " + Num(w) + "px;");
-            _uss.AppendLine("  height: " + Num(h) + "px;");
-            _uss.AppendLine("}");
-            _uss.AppendLine();
-            var pad = new string(' ', indent * 4);
-            return pad + "<ui:VisualElement name=\"fui_safe_zone_guide\" class=\"fui_safe_zone_guide " + className + "\" picking-mode=\"Ignore\" />\n";
-        }
 
         private string BuildElementXml(Dictionary<string, object> element, int indent, bool isRoot, string parentLayoutMode, Dictionary<string, object> parentBounds)
         {

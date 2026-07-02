@@ -24,4 +24,3 @@ Assets/<PROJECT_NAME>/
 - UXML и USS остаются обычными Unity assets и продолжают работать после удаления импортёра.
 - PanelRenderer используется в сценах Unity 6.5.
 - RuntimeTheme `.tss` создаётся в `PanelSettings/` и импортирует сгенерированные USS.
-- Если в `.fui` включена Safe Zone, импортёр создаёт guide-элемент safe zone внутри UXML.
