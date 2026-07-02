@@ -18,7 +18,7 @@ namespace AiMultiToolKit.FuiImporter
     public sealed class AiFuiImporterWindow : EditorWindow
     {
         private string _fuiPath = string.Empty;
-        private string _outputRoot = "Assets/FUI_Imported";
+        private string _outputRoot = "Assets";
         private Vector2 _scroll;
         private FuiImportReport _lastReport;
         private string _lastError = string.Empty;
@@ -126,18 +126,54 @@ namespace AiMultiToolKit.FuiImporter
                 }
             }
 
+            DrawImportedProjectsCleanup();
+
             EditorGUILayout.Space(12);
             EditorGUILayout.HelpBox(
                 "Что будет создано:\n" +
-                "UI/*.uxml + UI/*.uss — готово для UI Builder и Panel Renderer\n" +
+                "UXML/*.uxml — структура экранов для UI Builder\n" +
+                "USS/*.uss — стили экранов для UI Builder\n" +
                 "Textures/* — картинки, которые подключаются в USS через background-image\n" +
                 "Fonts/* — шрифты из .fui, если они были упакованы\n" +
                 "PanelSettings/* — настройки панели UI Toolkit\n" +
                 "Scenes/* — готовая сцена со всеми экранами и отдельная сцена на каждый экран\n" +
-                "Source/* — исходные JSON для проверки и отладки",
+                "Info/* — служебная информация импорта",
                 MessageType.None);
 
             EditorGUILayout.EndScrollView();
+        }
+
+
+        private void DrawImportedProjectsCleanup()
+        {
+            var projects = AiFuiImporter.FindImportedProjects(_outputRoot);
+            EditorGUILayout.Space(10);
+            EditorGUILayout.LabelField("Импортированные FUI проекты", EditorStyles.boldLabel);
+            if (projects.Count == 0)
+            {
+                EditorGUILayout.HelpBox("Пока нет импортированных проектов FUI.", MessageType.None);
+                return;
+            }
+            foreach (var project in projects)
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField(project.DisplayName, GUILayout.MinWidth(180));
+                    if (GUILayout.Button("Показать", GUILayout.Width(80)))
+                    {
+                        var folder = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(project.AssetPath);
+                        if (folder != null) EditorGUIUtility.PingObject(folder);
+                    }
+                    if (GUILayout.Button("Удалить", GUILayout.Width(80)))
+                    {
+                        if (EditorUtility.DisplayDialog("Удалить FUI проект", "Полностью удалить папку проекта?\n" + project.AssetPath, "Удалить", "Отмена"))
+                        {
+                            AiFuiImporter.DeleteImportedProject(project.AssetPath);
+                            GUIUtility.ExitGUI();
+                        }
+                    }
+                }
+            }
         }
 
         private void RunImport()
@@ -175,7 +211,7 @@ namespace AiMultiToolKit.FuiImporter
     [Serializable]
     public sealed class FuiImportOptions
     {
-        public string OutputRootAssetPath = "Assets/FUI_Imported";
+        public string OutputRootAssetPath = "Assets";
         public bool OverwriteExisting = true;
         public bool CreatePackageSubfolder = true;
         public bool ApplyTextureSettings = true;
@@ -225,8 +261,40 @@ namespace AiMultiToolKit.FuiImporter
         }
     }
 
+    public sealed class FuiImportedProjectInfo
+    {
+        public string DisplayName;
+        public string AssetPath;
+    }
+
     public static class AiFuiImporter
     {
+        public static List<FuiImportedProjectInfo> FindImportedProjects(string rootAssetPath)
+        {
+            var result = new List<FuiImportedProjectInfo>();
+            rootAssetPath = AiFuiImporterUtility.NormalizeAssetPath(string.IsNullOrEmpty(rootAssetPath) ? "Assets" : rootAssetPath);
+            var absRoot = AiFuiImporterUtility.ToAbsolutePath(rootAssetPath);
+            if (!Directory.Exists(absRoot)) return result;
+            foreach (var dir in Directory.GetDirectories(absRoot))
+            {
+                var name = Path.GetFileName(dir);
+                var assetPath = AiFuiImporterUtility.CombineAssetPath(rootAssetPath, name);
+                var infoPath = AiFuiImporterUtility.CombineAssetPath(AiFuiImporterUtility.CombineAssetPath(assetPath, "Info"), "fui-import-report.json");
+                if (!File.Exists(AiFuiImporterUtility.ToAbsolutePath(infoPath))) continue;
+                result.Add(new FuiImportedProjectInfo { DisplayName = name, AssetPath = assetPath });
+            }
+            return result.OrderBy(p => p.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        public static void DeleteImportedProject(string assetPath)
+        {
+            assetPath = AiFuiImporterUtility.NormalizeAssetPath(assetPath);
+            if (string.IsNullOrEmpty(assetPath) || assetPath == "Assets" || !assetPath.StartsWith("Assets/", StringComparison.Ordinal)) return;
+            AssetDatabase.DeleteAsset(assetPath);
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+        }
+
+
         public static FuiImportReport Import(string fuiFilePath, FuiImportOptions options)
         {
             options = options ?? new FuiImportOptions();
@@ -235,7 +303,7 @@ namespace AiMultiToolKit.FuiImporter
 
             var normalizedRoot = AiFuiImporterUtility.NormalizeAssetPath(options.OutputRootAssetPath);
             if (!normalizedRoot.StartsWith("Assets/", StringComparison.Ordinal) && normalizedRoot != "Assets")
-                throw new ArgumentException("Папка вывода должна быть внутри Assets/. Пример: Assets/FUI_Imported");
+                throw new ArgumentException("Папка вывода должна быть внутри Assets/. Пример: Assets");
 
             var package = FuiPackage.Read(fuiFilePath);
             var projectName = AiFuiImporterUtility.SanitizeFileName(package.ProjectName, Path.GetFileNameWithoutExtension(fuiFilePath));
@@ -249,19 +317,21 @@ namespace AiMultiToolKit.FuiImporter
             };
             var generatedScreens = new List<FuiGeneratedScreenAsset>();
 
-            var sourceRoot = AiFuiImporterUtility.CombineAssetPath(outputRoot, "Source");
-            var uiRoot = AiFuiImporterUtility.CombineAssetPath(outputRoot, "UI");
+            var infoRoot = AiFuiImporterUtility.CombineAssetPath(outputRoot, "Info");
+            var uxmlRoot = AiFuiImporterUtility.CombineAssetPath(outputRoot, "UXML");
+            var ussRoot = AiFuiImporterUtility.CombineAssetPath(outputRoot, "USS");
             var textureRoot = AiFuiImporterUtility.CombineAssetPath(outputRoot, "Textures");
             var fontRoot = AiFuiImporterUtility.CombineAssetPath(outputRoot, "Fonts");
-            AiFuiImporterUtility.EnsureAssetFolder(sourceRoot);
-            AiFuiImporterUtility.EnsureAssetFolder(uiRoot);
+            AiFuiImporterUtility.EnsureAssetFolder(infoRoot);
+            AiFuiImporterUtility.EnsureAssetFolder(uxmlRoot);
+            AiFuiImporterUtility.EnsureAssetFolder(ussRoot);
             AiFuiImporterUtility.EnsureAssetFolder(textureRoot);
             AiFuiImporterUtility.EnsureAssetFolder(fontRoot);
 
-            WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(sourceRoot, "manifest.json"), package.ManifestJson ?? "{}");
-            WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(sourceRoot, "metadata.json"), package.MetadataJson ?? "{}");
-            WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(sourceRoot, "assets.json"), package.AssetsJson ?? "[]");
-            WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(sourceRoot, "fonts.json"), package.FontsJson ?? "{}");
+            WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(infoRoot, "manifest.json"), package.ManifestJson ?? "{}");
+            WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(infoRoot, "metadata.json"), package.MetadataJson ?? "{}");
+            WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(infoRoot, "assets.json"), package.AssetsJson ?? "[]");
+            WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(infoRoot, "fonts.json"), package.FontsJson ?? "{}");
 
             var assetPathMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var fontPathMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -311,9 +381,9 @@ namespace AiMultiToolKit.FuiImporter
             {
                 var baseScreenName = AiFuiImporterUtility.SanitizeFileName(FuiJson.GetString(screen, "name", "Screen"), "Screen");
                 var screenName = AiFuiImporterUtility.MakeUniqueName(baseScreenName, usedScreenNames);
-                var ussPath = AiFuiImporterUtility.CombineAssetPath(uiRoot, screenName + ".uss");
-                var uxmlPath = AiFuiImporterUtility.CombineAssetPath(uiRoot, screenName + ".uxml");
-                var sourcePath = AiFuiImporterUtility.CombineAssetPath(sourceRoot, "screen_" + screenName + ".json");
+                var ussPath = AiFuiImporterUtility.CombineAssetPath(ussRoot, screenName + ".uss");
+                var uxmlPath = AiFuiImporterUtility.CombineAssetPath(uxmlRoot, screenName + ".uxml");
+                var sourcePath = AiFuiImporterUtility.CombineAssetPath(infoRoot, "screen_" + screenName + ".json");
 
                 var textGradientFolder = AiFuiImporterUtility.CombineAssetPath(AiFuiImporterUtility.CombineAssetPath(outputRoot, "Resources"), "Text Color Gradients");
                 AiFuiImporterUtility.EnsureAssetFolder(textGradientFolder);
@@ -360,7 +430,7 @@ namespace AiMultiToolKit.FuiImporter
                 CreateSceneObjects(projectName, generatedScreens, panelSettings, report);
             }
 
-            WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(outputRoot, "fui-import-report.json"), BuildReportJson(report));
+            WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(infoRoot, "fui-import-report.json"), BuildReportJson(report));
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
 
             if (options.OpenFirstUxmlAfterImport && report.GeneratedUxml.Count > 0)
@@ -1217,6 +1287,8 @@ namespace AiMultiToolKit.FuiImporter
             if (screenHeight > 0) _uss.AppendLine("  height: " + Num(screenHeight) + "px;"); else _uss.AppendLine("  height: 100%;");
             if (screenWidth > 0) _uss.AppendLine("  min-width: " + Num(screenWidth) + "px;");
             if (screenHeight > 0) _uss.AppendLine("  min-height: " + Num(screenHeight) + "px;");
+            if (screenWidth > 0) _uss.AppendLine("  max-width: " + Num(screenWidth) + "px;");
+            if (screenHeight > 0) _uss.AppendLine("  max-height: " + Num(screenHeight) + "px;");
             _uss.AppendLine("  flex-grow: 0;");
             _uss.AppendLine("  flex-shrink: 0;");
             _uss.AppendLine("  position: relative;");
@@ -1304,6 +1376,8 @@ namespace AiMultiToolKit.FuiImporter
                     .Append("height: ").Append(Num(_screenHeight)).Append("px; ")
                     .Append("min-width: ").Append(Num(_screenWidth)).Append("px; ")
                     .Append("min-height: ").Append(Num(_screenHeight)).Append("px; ")
+                    .Append("max-width: ").Append(Num(_screenWidth)).Append("px; ")
+                    .Append("max-height: ").Append(Num(_screenHeight)).Append("px; ")
                     .Append("flex-grow: 0; flex-shrink: 0; position: relative; overflow: hidden;\"");
             }
 
@@ -1384,6 +1458,8 @@ namespace AiMultiToolKit.FuiImporter
                 if (rootHeight > 0) AppendPx("height", rootHeight); else _uss.AppendLine("  height: 100%;");
                 if (rootWidth > 0) AppendPx("min-width", rootWidth);
                 if (rootHeight > 0) AppendPx("min-height", rootHeight);
+                if (rootWidth > 0) AppendPx("max-width", rootWidth);
+                if (rootHeight > 0) AppendPx("max-height", rootHeight);
                 _uss.AppendLine("  flex-grow: 0;");
                 _uss.AppendLine("  flex-shrink: 0;");
                 _uss.AppendLine("  position: relative;");
@@ -1460,6 +1536,28 @@ namespace AiMultiToolKit.FuiImporter
             if (anchor != null)
             {
                 var scenario = FuiJson.GetString(anchor, "scenario", string.Empty);
+                if (scenario == "MODAL_FULL_SCREEN_OVERLAY")
+                {
+                    _uss.AppendLine("  left: 0;");
+                    _uss.AppendLine("  top: 0;");
+                    if (parentWidth > 0) AppendPx("width", parentWidth); else _uss.AppendLine("  right: 0;");
+                    if (parentHeight > 0) AppendPx("height", parentHeight); else _uss.AppendLine("  bottom: 0;");
+                    _uss.AppendLine("  overflow: visible;");
+                    return;
+                }
+                if (scenario == "MODAL_CENTER_OVERLAY")
+                {
+                    var anchorLeft = FuiJson.GetNullableDouble(anchor, "left");
+                    var anchorTop = FuiJson.GetNullableDouble(anchor, "top");
+                    var anchorWidth = FuiJson.GetNullableDouble(anchor, "width");
+                    var anchorHeight = FuiJson.GetNullableDouble(anchor, "height");
+                    AppendPx("left", anchorLeft.HasValue ? anchorLeft.Value : localX);
+                    AppendPx("top", anchorTop.HasValue ? anchorTop.Value : localY);
+                    AppendPx("width", anchorWidth.HasValue ? anchorWidth.Value : width);
+                    AppendPx("height", anchorHeight.HasValue ? anchorHeight.Value : height);
+                    _uss.AppendLine("  overflow: visible;");
+                    return;
+                }
                 if (scenario == "A_FULL_STRETCH_BACKGROUND")
                 {
                     _uss.AppendLine("  left: 0;");
@@ -1880,13 +1978,13 @@ namespace AiMultiToolKit.FuiImporter
             if (mode.Equals("flex", StringComparison.OrdinalIgnoreCase) && !parentIsLayered)
             {
                 ordered = direction == "row"
-                    ? list.OrderBy(x => GetBoundsDouble(x.Dict, "x")).ThenBy(x => GetBoundsDouble(x.Dict, "y")).ThenBy(x => x.Index)
-                    : list.OrderBy(x => GetBoundsDouble(x.Dict, "y")).ThenBy(x => GetBoundsDouble(x.Dict, "x")).ThenBy(x => x.Index);
+                    ? list.OrderBy(x => IsPopupElement(x.Dict) ? 1 : 0).ThenBy(x => GetBoundsDouble(x.Dict, "x")).ThenBy(x => GetBoundsDouble(x.Dict, "y")).ThenBy(x => x.Index)
+                    : list.OrderBy(x => IsPopupElement(x.Dict) ? 1 : 0).ThenBy(x => GetBoundsDouble(x.Dict, "y")).ThenBy(x => GetBoundsDouble(x.Dict, "x")).ThenBy(x => x.Index);
             }
             else
             {
                 // Absolute/layered containers must keep visual depth, not flow order.
-                // Full-screen/oversized backgrounds go first even if Figma layer order is inconsistent.
+                // Full-screen/oversized backgrounds go first; Popup/modal overlays go last so they render above the screen.
                 ordered = list.OrderBy(x => LayerRoleWeight(x.Dict, parentBounds)).ThenBy(x => x.Index);
             }
 
@@ -1899,6 +1997,16 @@ namespace AiMultiToolKit.FuiImporter
             return FuiJson.GetDouble(bounds, key, 0);
         }
 
+        private static bool IsPopupElement(Dictionary<string, object> element)
+        {
+            if (element == null) return false;
+            var type = NormalizeType(FuiJson.GetString(element, "elementType", "Panel"));
+            var name = (FuiJson.GetString(element, "name", string.Empty) + " " + FuiJson.GetString(element, "originalName", string.Empty)).ToLowerInvariant();
+            var anchor = FuiJson.GetObject(element, "anchor");
+            var scenario = FuiJson.GetString(anchor, "scenario", string.Empty);
+            return type == "Popup" || scenario.StartsWith("MODAL", StringComparison.OrdinalIgnoreCase) || name.Contains("modal") || name.Contains("popup");
+        }
+
         private static int LayerRoleWeight(Dictionary<string, object> element, Dictionary<string, object> parentBounds)
         {
             if (element == null) return 50;
@@ -1907,6 +2015,7 @@ namespace AiMultiToolKit.FuiImporter
             var bounds = FuiJson.GetObject(element, "bounds");
             var anchor = FuiJson.GetObject(element, "anchor");
             var scenario = FuiJson.GetString(anchor, "scenario", string.Empty);
+            if (IsPopupElement(element)) return 200;
             if (scenario == "A_FULL_STRETCH_BACKGROUND" || CoversParent(bounds, parentBounds, 0.72)) return 0;
             if (name.Contains("background") || name.Contains("bg") || name.Contains("fon") || name.Contains("фон") || name.Contains("back")) return 5;
             if (name.Contains("track") || name.Contains("bar_bg") || name.Contains("bar bg") || name.Contains("plate") || name.Contains("плаш")) return 10;
