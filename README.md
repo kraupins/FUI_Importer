@@ -1,7 +1,7 @@
 # MTK | Figma UI Import
 
 **Автор:** By Kraupin | Multi-Tool Kit  
-**Версия:** 1.1.0  
+**Версия:** 1.1.1  
 **Package ID:** `com.mtk.fui-import`
 
 Импорт из Figma с помощью инструмента Multi-Tool Kit.
