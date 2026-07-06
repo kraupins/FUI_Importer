@@ -1,6 +1,6 @@
 {
   "name": "com.mtk.fui-import",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "displayName": "MTK | Figma UI Import",
   "description": "Импорт из Figma с помощью инструмента Multi-Tool Kit.",
   "unity": "6000.5",
