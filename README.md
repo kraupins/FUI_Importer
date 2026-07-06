@@ -55,3 +55,7 @@ Color Gradient Presets
 ```
 
 Выбери `.fui` файл и нажми **Импортировать**.
+
+## Примечание для Unity Package Manager
+
+Внутренний `displayName` пакета не содержит символ `|`, чтобы Unity Project Browser на Windows не ловил `Illegal characters in path`. Название в окне инструмента остаётся `MTK | Figma UI Import`.
