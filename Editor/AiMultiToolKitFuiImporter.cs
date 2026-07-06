@@ -13,7 +13,7 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UIElements;
 
-namespace AiMultiToolKit.FuiImporter
+namespace MTK.FigmaUIImport
 {
     public sealed class AiFuiImporterWindow : EditorWindow
     {
@@ -22,22 +22,22 @@ namespace AiMultiToolKit.FuiImporter
         private FuiImportReport _lastReport;
         private string _lastError = string.Empty;
 
-        [MenuItem("Инструменты/AI Multi-Tool Kit/FUI Импортёр")]
+        [MenuItem("Инструменты/MTK/Figma UI Import")]
         public static void OpenWindow()
         {
-            var window = GetWindow<AiFuiImporterWindow>("FUI Импортёр");
+            var window = GetWindow<AiFuiImporterWindow>("MTK | Figma UI Import");
             window.minSize = new Vector2(460, 420);
             window.Show();
         }
 
-        [MenuItem("Assets/AI Multi-Tool Kit/Импортировать выбранный .fui", true)]
+        [MenuItem("Assets/MTK/Import selected .fui", true)]
         private static bool ValidateImportSelectedFui()
         {
             var path = GetSelectedProjectPath();
             return !string.IsNullOrEmpty(path) && path.EndsWith(".fui", StringComparison.OrdinalIgnoreCase);
         }
 
-        [MenuItem("Assets/AI Multi-Tool Kit/Импортировать выбранный .fui")]
+        [MenuItem("Assets/MTK/Import selected .fui")]
         private static void ImportSelectedFui()
         {
             var path = GetSelectedProjectPath();
@@ -46,12 +46,12 @@ namespace AiMultiToolKit.FuiImporter
             try
             {
                 var report = AiFuiImporter.Import(absolute, new FuiImportOptions());
-                EditorUtility.DisplayDialog("FUI Импорт", report.ToHumanString(), "OK");
+                EditorUtility.DisplayDialog("MTK | Figma UI Import", report.ToHumanString(), "OK");
             }
             catch (Exception ex)
             {
                 Debug.LogException(ex);
-                EditorUtility.DisplayDialog("Ошибка импорта FUI", ex.Message, "OK");
+                EditorUtility.DisplayDialog("Ошибка импорта", ex.Message, "OK");
             }
         }
 
@@ -65,15 +65,17 @@ namespace AiMultiToolKit.FuiImporter
         {
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
 
-            EditorGUILayout.Space(6);
-            EditorGUILayout.LabelField("AI Multi-Tool Kit · FUI → Unity UI Toolkit", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox(
-                "Импортирует .fui из Figma-плагина и автоматически создаёт готовый Unity UI Toolkit проект: UXML/USS для UI Builder, текстуры, шрифты, PanelSettings, RuntimeTheme и отдельные Unity-сцены. Префабы с PanelRenderer не создаются, потому что Unity AssetPreview может выдавать некорректный AABB/NaN для UI Toolkit renderer-prefab assets. " +
-                "После импорта этот пакет можно удалить: созданный UI остаётся на стандартном Unity UI Toolkit.",
-                MessageType.Info);
+            EditorGUILayout.Space(10);
+            var titleStyle = new GUIStyle(EditorStyles.boldLabel)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                fontSize = 22,
+                fixedHeight = 34
+            };
+            EditorGUILayout.LabelField("MTK | Figma UI Import", titleStyle);
 
-            EditorGUILayout.Space(8);
-            EditorGUILayout.LabelField("Входные данные", EditorStyles.boldLabel);
+            EditorGUILayout.Space(10);
+            EditorGUILayout.LabelField("FUI-файл", EditorStyles.boldLabel);
             using (new EditorGUILayout.HorizontalScope())
             {
                 _fuiPath = EditorGUILayout.TextField(".fui файл", _fuiPath);
@@ -84,16 +86,10 @@ namespace AiMultiToolKit.FuiImporter
                 }
             }
 
-            EditorGUILayout.Space(8);
-            EditorGUILayout.LabelField("Куда импортировать", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox(
-                "Папка вывода всегда определяется автоматически: Assets/<название проекта из .fui>. Внутри будут UXML, USS, Textures, Fonts, PanelSettings, Scenes и Info.",
-                MessageType.None);
-
             EditorGUILayout.Space(10);
             using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(_fuiPath)))
             {
-                if (GUILayout.Button("Импортировать .fui в UI Toolkit", GUILayout.Height(34)))
+                if (GUILayout.Button("Импортировать", GUILayout.Height(34)))
                 {
                     RunImport();
                 }
@@ -105,38 +101,14 @@ namespace AiMultiToolKit.FuiImporter
                 EditorGUILayout.HelpBox(_lastError, MessageType.Error);
             }
 
-            if (_lastReport != null)
-            {
-                EditorGUILayout.Space(10);
-                EditorGUILayout.LabelField("Последний импорт", EditorStyles.boldLabel);
-                EditorGUILayout.HelpBox(_lastReport.ToHumanString(), MessageType.None);
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    if (GUILayout.Button("Показать папку"))
-                    {
-                        var folder = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(_lastReport.OutputRootAssetPath);
-                        if (folder != null) EditorGUIUtility.PingObject(folder);
-                    }
-                    if (GUILayout.Button("Открыть в проводнике/Finder"))
-                    {
-                        EditorUtility.RevealInFinder(AiFuiImporterUtility.ToAbsolutePath(_lastReport.OutputRootAssetPath));
-                    }
-                }
-            }
+            EditorGUILayout.Space(12);
+            EditorGUILayout.LabelField("Что создаётся", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox(
+                "Папка Assets/<PROJECT_NAME>/ с UXML, USS, Textures, Fonts, Resources/Color Gradient Presets, PanelSettings, Scenes и Info.\n" +
+                "Тексты остаются редактируемыми Label/Button. Градиенты текста импортируются как TextCore Color Gradient presets и применяются через Unity rich text.",
+                MessageType.None);
 
             DrawImportedProjectsCleanup();
-
-            EditorGUILayout.Space(12);
-            EditorGUILayout.HelpBox(
-                "Что будет создано:\n" +
-                "UXML/*.uxml — структура экранов для UI Builder\n" +
-                "USS/*.uss — стили экранов для UI Builder\n" +
-                "Textures/* — картинки, которые подключаются в USS через background-image\n" +
-                "Fonts/* — шрифты из .fui, если они были упакованы\n" +
-                "PanelSettings/* — настройки панели UI Toolkit\n" +
-                "Scenes/* — отдельная сцена на каждый экран\n" +
-                "Info/* — служебная информация импорта",
-                MessageType.None);
 
             EditorGUILayout.EndScrollView();
         }
@@ -146,10 +118,10 @@ namespace AiMultiToolKit.FuiImporter
         {
             var projects = AiFuiImporter.FindImportedProjects("Assets");
             EditorGUILayout.Space(10);
-            EditorGUILayout.LabelField("Импортированные FUI проекты", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("Импортированные проекты", EditorStyles.boldLabel);
             if (projects.Count == 0)
             {
-                EditorGUILayout.HelpBox("Пока нет импортированных проектов FUI.", MessageType.None);
+                EditorGUILayout.HelpBox("Пока нет импортированных проектов.", MessageType.None);
                 return;
             }
             foreach (var project in projects)
@@ -164,7 +136,7 @@ namespace AiMultiToolKit.FuiImporter
                     }
                     if (GUILayout.Button("Удалить", GUILayout.Width(80)))
                     {
-                        if (EditorUtility.DisplayDialog("Удалить FUI проект", "Полностью удалить папку проекта?\n" + project.AssetPath, "Удалить", "Отмена"))
+                        if (EditorUtility.DisplayDialog("Удалить импортированный проект", "Полностью удалить папку проекта?\n" + project.AssetPath, "Удалить", "Отмена"))
                         {
                             AiFuiImporter.DeleteImportedProject(project.AssetPath);
                             if (_lastReport != null && string.Equals(AiFuiImporterUtility.NormalizeAssetPath(_lastReport.OutputRootAssetPath), AiFuiImporterUtility.NormalizeAssetPath(project.AssetPath), StringComparison.OrdinalIgnoreCase)) _lastReport = null;
@@ -198,8 +170,8 @@ namespace AiMultiToolKit.FuiImporter
                 };
 
                 _lastReport = AiFuiImporter.Import(_fuiPath, options);
-                Debug.Log("[FUI Импортёр] " + _lastReport.ToHumanString());
-                EditorUtility.DisplayDialog("Импорт FUI завершён", _lastReport.ToHumanString(), "OK");
+                Debug.Log("[MTK | Figma UI Import] " + _lastReport.ToHumanString());
+                EditorUtility.DisplayDialog("MTK | Figma UI Import", _lastReport.ToHumanString(), "OK");
             }
             catch (Exception ex)
             {
@@ -800,7 +772,7 @@ namespace AiMultiToolKit.FuiImporter
                     ?? AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType("UnityEngine.UIElements.TextSettings") ?? a.GetType("UnityEngine.UIElements.PanelTextSettings")).FirstOrDefault(t => t != null);
                 if (textSettingsType == null)
                 {
-                    AddReportWarning(report, "Unity Text Settings asset не создан: тип UnityEngine.UIElements.TextSettings не найден в этой версии Unity.");
+                    AddReportWarning(report, "Unity Panel Text Settings asset не создан: тип UnityEngine.UIElements.TextSettings не найден в этой версии Unity.");
                     return null;
                 }
 
@@ -812,18 +784,20 @@ namespace AiMultiToolKit.FuiImporter
                 if (textSettings == null) return null;
 
                 var so = new SerializedObject(textSettings);
-                // Unity 6.5 resolves <gradient="name"> through the Panel Text Settings path.
-                // The Inspector path must point to the real folder under Resources, not just the folder name.
-                // Assets/<Project>/Resources/Color Gradient Presets is the folder used by the importer.
+                // Unity 6.5 resolves <gradient="name"> through Panel Text Settings and Resources.Load.
+                // The preset assets are stored in Assets/<Project>/Resources/Color Gradient Presets,
+                // but the Text Settings path itself must be the Resources-relative folder name.
                 var resourcesFolder = AiFuiImporterUtility.CombineAssetPath(outputRoot, "Resources");
-                var colorGradientPresetPath = AiFuiImporterUtility.NormalizeAssetPath(
-                    AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Color Gradient Presets"));
-                var fontAssetPath = AiFuiImporterUtility.NormalizeAssetPath(
-                    AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Fonts & Materials"));
-                var spriteAssetPath = AiFuiImporterUtility.NormalizeAssetPath(
-                    AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Sprite Assets"));
-                var styleSheetPath = AiFuiImporterUtility.NormalizeAssetPath(
-                    AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Style Sheets"));
+                AiFuiImporterUtility.EnsureAssetFolder(resourcesFolder);
+                AiFuiImporterUtility.EnsureAssetFolder(AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Color Gradient Presets"));
+                AiFuiImporterUtility.EnsureAssetFolder(AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Fonts & Materials"));
+                AiFuiImporterUtility.EnsureAssetFolder(AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Sprite Assets"));
+                AiFuiImporterUtility.EnsureAssetFolder(AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Text Style Sheets"));
+
+                var colorGradientPresetPath = "Color Gradient Presets";
+                var fontAssetPath = "Fonts & Materials";
+                var spriteAssetPath = "Sprite Assets";
+                var styleSheetPath = "Text Style Sheets";
 
                 TrySetSerializedStringAny(so, new[]
                 {
@@ -881,7 +855,7 @@ namespace AiMultiToolKit.FuiImporter
             }
             catch (Exception ex)
             {
-                AddReportWarning(report, "Не удалось создать Unity Text Settings asset: " + ex.Message);
+                AddReportWarning(report, "Не удалось создать Unity Panel Text Settings asset: " + ex.Message);
                 return null;
             }
         }
@@ -895,7 +869,7 @@ namespace AiMultiToolKit.FuiImporter
                 AiFuiImporterUtility.EnsureAssetFolder(folder);
                 var themePath = AiFuiImporterUtility.CombineAssetPath(folder, AiFuiImporterUtility.SanitizeFileName(projectName + "_RuntimeTheme", "FUI_RuntimeTheme") + ".tss");
                 var sb = new StringBuilder();
-                sb.AppendLine("/* Auto-generated FUI runtime theme. */");
+                sb.AppendLine("/* Auto-generated MTK Figma UI Import runtime theme. */");
                 sb.AppendLine("/* ВАЖНО: RuntimeTheme должен быть базовой Unity-темой, а не контейнером всех экранных USS. */");
                 sb.AppendLine("/* Экранные USS уже подключаются напрямую внутри каждого UXML через <Style>. */");
                 sb.AppendLine("/* Если импортировать все USS сюда, одинаковые fallback-классы разных экранов начинают конфликтовать: */");
@@ -1362,7 +1336,7 @@ namespace AiMultiToolKit.FuiImporter
             }
             catch (Exception zipException)
             {
-                Debug.LogWarning("[FUI Импортёр] Standard ZipArchive read failed. Trying tolerant FUI zip reader. Reason: " + zipException.Message);
+                Debug.LogWarning("[MTK | Figma UI Import] Standard ZipArchive read failed. Trying tolerant FUI zip reader. Reason: " + zipException.Message);
                 var entries = FuiTolerantZipReader.ReadStoredZip(fuiFilePath);
                 return FromArchiveFiles(fuiFilePath, entries);
             }
@@ -1580,7 +1554,7 @@ namespace AiMultiToolKit.FuiImporter
                 var localExtraLength = ReadUInt16(data, localOffset + 28);
                 var dataStart = localOffset + 30 + localNameLength + localExtraLength;
 
-                // AI Multi-Tool Kit 3.2.2 writes a browser-side stored zip. Older builds may have an incorrect
+                // Multi-Tool Kit writes a browser-side stored zip. Older builds may have an incorrect
                 // local extra length equal to file-name length while the central directory says there is no extra field.
                 // In that case we trust the central directory and keep reading the package instead of failing import.
                 if (centralExtraLength == 0 && localExtraLength == localNameLength)
@@ -1698,7 +1672,7 @@ namespace AiMultiToolKit.FuiImporter
             var root = FuiJson.GetObject(_screen, "root");
             if (root == null) root = _screen;
 
-            _uss.AppendLine("/* Auto-generated by AI Multi-Tool Kit FUI Importer. */");
+            _uss.AppendLine("/* Auto-generated by MTK | Figma UI Import. */");
             _uss.AppendLine("/* Safe to keep after deleting the importer. Uses standard Unity UI Toolkit USS only. */");
             var rootBounds = FuiJson.GetObject(root, "bounds");
             var screenWidth = FuiJson.GetDouble(_screen, "width", 0);

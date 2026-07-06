@@ -1,11 +1,11 @@
 {
-  "name": "com.aimultitoolkit.fui-importer",
-  "version": "1.0.22",
-  "displayName": "AI Multi-Tool Kit FUI Импортёр",
-  "description": "Русский импортёр .fui из Figma в Unity 6.5 UI Toolkit: UXML/USS, Panel Renderer-сцены, шрифты, tag-based компоненты и стабильные TextCore rich-text градиенты с корректным Panel Text Settings path.",
+  "name": "com.mtk.fui-import",
+  "version": "1.1.0",
+  "displayName": "MTK | Figma UI Import",
+  "description": "Импорт из Figma с помощью инструмента Multi-Tool Kit.",
   "unity": "6000.5",
   "author": {
-    "name": "AI Multi-Tool Kit"
+    "name": "By Kraupin | Multi-Tool Kit"
   },
   "license": "UNLICENSED",
   "keywords": [
@@ -13,7 +13,9 @@
     "fui",
     "ui-toolkit",
     "uxml",
-    "uss"
+    "uss",
+    "mtk",
+    "multi-tool-kit"
   ],
   "type": "tool"
 }

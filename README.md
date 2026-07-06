@@ -1,21 +1,14 @@
-# FUI Importer 1.0.22 — gradient path fix
+# MTK | Figma UI Import
 
-База: рабочая 1.0.18/1.0.21 без изменения архитектуры элементов.
+**Автор:** By Kraupin | Multi-Tool Kit  
+**Версия:** 1.1.0  
+**Package ID:** `com.mtk.fui-import`
 
-Фикс:
-- TextCore Color Gradient presets остаются в `Assets/<Project>/Resources/Color Gradient Presets`.
-- `MY_GAME_DESIGN_TextSettings` теперь получает полный asset path к этой папке, а не только `Color Gradient Presets`.
-- UXML по-прежнему использует официальный Unity rich text `<color=white><gradient="preset">Text</gradient></color>` и `enable-rich-text="true"`.
-- Цвета градиентных preset принудительно opaque, чтобы текст не становился прозрачным из-за alpha=0 в экспорте.
-- Добавлена более жёсткая запись path через known fields + проход по serialized string properties с `gradient` + `path`, чтобы пережить разные названия полей Unity 6.5.
+Импорт из Figma с помощью инструмента Multi-Tool Kit.
 
-# AI Multi-Tool Kit FUI Импортёр
+## Что делает плагин
 
-Unity 6.5+ UPM-пакет для импорта `.fui` из Figma-плагина AI Multi-Tool Kit в Unity UI Toolkit.
-
-## Что создаётся
-
-После импорта создаётся папка:
+Плагин импортирует `.fui` пакет в Unity 6.5 UI Toolkit и создаёт отдельную папку проекта:
 
 ```text
 Assets/<PROJECT_NAME>/
@@ -29,21 +22,36 @@ Assets/<PROJECT_NAME>/
   Info/
 ```
 
-Префабы не создаются, чтобы не ловить ошибки Unity AssetPreview с PanelRenderer. Создаётся отдельная сцена на каждый экран. Общая сцена со всеми экранами не создаётся.
+После импорта UXML/USS, текстуры, сцены и PanelSettings остаются обычными Unity assets.
 
-## Важно
+## Текст и градиенты
 
-- UXML и USS остаются обычными Unity assets и продолжают работать после удаления импортёра.
-- PanelRenderer используется в сценах Unity 6.5.
-- RuntimeTheme `.tss` создаётся в `PanelSettings/`, сначала импортирует `unity-theme://default`, затем сгенерированные USS.
-- Все текстуры импортируются как Sprite (2D and UI). Для 9-slice ассетов в TextureImporter ставится Sprite Border.
+Текстовые элементы остаются редактируемыми `Label` / `Button`. Если у текста в Figma есть градиент, импортёр создаёт `TextCore TextColorGradient` preset в:
 
+```text
+Assets/<PROJECT_NAME>/Resources/Color Gradient Presets/
+```
 
-## Исправление 1.0.17
+В UXML текст получает официальный Unity rich-text формат:
 
-RuntimeTheme теперь импортирует только `unity-theme://default`, а экранные USS остаются подключёнными напрямую в соответствующих UXML. Это убирает конфликты классов между экранами, когда фон или layout из loading применялся к main menu. Дополнительно селекторы элементов в USS теперь скоупятся через root-класс экрана.
+```text
+<color=#FFFFFFFF><gradient="preset_name">Text</gradient></color>
+```
 
-## Исправление 1.0.21
+Для таких элементов включается `enable-rich-text="true"`, а `Panel Text Settings` получает путь:
 
-База — рабочая версия 1.0.18. Исправление точечное: генерация обычных `Label`/`Button` не заменялась кастомными классами. Для текстовых градиентов стабилизированы TextCore gradient presets: имена теперь уникальны по содержимому градиента, alpha цветов принудительно непрозрачная, пресеты сохраняются в `Resources/Color Gradient Presets/`, а в UXML для градиентного текста ставится `enable-rich-text="true"`. Также очищаются случайно попавшие в видимый текст TextCore-теги вида `<style F0000...>`.
+```text
+Color Gradient Presets
+```
 
+Это Resources-relative путь к папке с gradient preset assets.
+
+## Импорт
+
+Открой окно:
+
+```text
+Инструменты → MTK → Figma UI Import
+```
+
+Выбери `.fui` файл и нажми **Импортировать**.
