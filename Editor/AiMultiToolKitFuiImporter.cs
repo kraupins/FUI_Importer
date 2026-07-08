@@ -243,6 +243,9 @@ namespace MTK.FigmaUIImport
 
     public static class AiFuiImporter
     {
+        private const string CanonicalResourcesRootPath = "Assets/Resources";
+        private const string CanonicalTextGradientPresetFolderPath = "Assets/Resources/Color Gradient Presets";
+
         public static List<FuiImportedProjectInfo> FindImportedProjects(string rootAssetPath)
         {
             var result = new List<FuiImportedProjectInfo>();
@@ -302,6 +305,9 @@ namespace MTK.FigmaUIImport
             AiFuiImporterUtility.EnsureAssetFolder(ussRoot);
             AiFuiImporterUtility.EnsureAssetFolder(textureRoot);
             AiFuiImporterUtility.EnsureAssetFolder(fontRoot);
+
+            EnsureGlobalTextGradientPresetFolder();
+            MigrateLegacyProjectGradientPresets(outputRoot, report);
 
             WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(infoRoot, "manifest.json"), package.ManifestJson ?? "{}");
             WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(infoRoot, "metadata.json"), package.MetadataJson ?? "{}");
@@ -793,7 +799,8 @@ namespace MTK.FigmaUIImport
                 // while the Text Settings path itself remains Resources-relative.
                 var resourcesFolder = GetGlobalResourcesRootPath();
                 AiFuiImporterUtility.EnsureAssetFolder(resourcesFolder);
-                AiFuiImporterUtility.EnsureAssetFolder(AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Color Gradient Presets"));
+                AiFuiImporterUtility.EnsureAssetFolder(GetTextGradientPresetFolderPath());
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
                 AiFuiImporterUtility.EnsureAssetFolder(AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Fonts & Materials"));
                 AiFuiImporterUtility.EnsureAssetFolder(AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Sprite Assets"));
                 AiFuiImporterUtility.EnsureAssetFolder(AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Text Style Sheets"));
@@ -983,12 +990,56 @@ namespace MTK.FigmaUIImport
 
         private static string GetGlobalResourcesRootPath()
         {
-            return "Assets/Resources";
+            return CanonicalResourcesRootPath;
         }
 
         private static string GetTextGradientPresetFolderPath()
         {
-            return AiFuiImporterUtility.CombineAssetPath(GetGlobalResourcesRootPath(), "Color Gradient Presets");
+            // UI Toolkit/TextCore resolves rich-text <gradient="..."> presets reliably only
+            // from the project-level Resources folder, not from Assets/<Project>/Resources.
+            return CanonicalTextGradientPresetFolderPath;
+        }
+
+        private static void EnsureGlobalTextGradientPresetFolder()
+        {
+            AiFuiImporterUtility.EnsureAssetFolder(CanonicalResourcesRootPath);
+            AiFuiImporterUtility.EnsureAssetFolder(CanonicalTextGradientPresetFolderPath);
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+        }
+
+        private static void MigrateLegacyProjectGradientPresets(string outputRoot, FuiImportReport report)
+        {
+            try
+            {
+                var legacyFolder = AiFuiImporterUtility.CombineAssetPath(AiFuiImporterUtility.CombineAssetPath(outputRoot, "Resources"), "Color Gradient Presets");
+                legacyFolder = AiFuiImporterUtility.NormalizeAssetPath(legacyFolder);
+                if (string.Equals(legacyFolder, CanonicalTextGradientPresetFolderPath, StringComparison.OrdinalIgnoreCase)) return;
+                if (!AssetDatabase.IsValidFolder(legacyFolder)) return;
+
+                EnsureGlobalTextGradientPresetFolder();
+                var guids = AssetDatabase.FindAssets("t:Object", new[] { legacyFolder });
+                foreach (var guid in guids)
+                {
+                    var oldPath = AssetDatabase.GUIDToAssetPath(guid);
+                    if (string.IsNullOrEmpty(oldPath) || !oldPath.EndsWith(".asset", StringComparison.OrdinalIgnoreCase)) continue;
+                    var fileName = Path.GetFileName(oldPath);
+                    var newPath = AssetDatabase.GenerateUniqueAssetPath(AiFuiImporterUtility.CombineAssetPath(CanonicalTextGradientPresetFolderPath, fileName));
+                    var error = AssetDatabase.MoveAsset(oldPath, newPath);
+                    if (!string.IsNullOrEmpty(error))
+                    {
+                        AddReportWarning(report, "Не удалось перенести legacy gradient preset в Assets/Resources/Color Gradient Presets: " + error);
+                    }
+                }
+
+                // Удаляем пустую старую папку, чтобы после импорта не казалось, что importer всё ещё пишет туда.
+                var legacyAbs = AiFuiImporterUtility.ToAbsolutePath(legacyFolder);
+                if (Directory.Exists(legacyAbs) && !Directory.EnumerateFileSystemEntries(legacyAbs).Any()) AssetDatabase.DeleteAsset(legacyFolder);
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            }
+            catch (Exception ex)
+            {
+                AddReportWarning(report, "Не удалось перенести старые gradient presets: " + ex.Message);
+            }
         }
 
         private static string GetGeneratedScenesFolderPath()
@@ -1793,7 +1844,9 @@ namespace MTK.FigmaUIImport
             _assetPathMap = assetPathMap ?? new Dictionary<string, string>();
             _fontPathMap = fontPathMap ?? new Dictionary<string, string>();
             _fontMetadata = fontMetadata ?? new List<FuiFontMeta>();
-            _textGradientFolderPath = textGradientFolderPath ?? string.Empty;
+            // Force the canonical project-level Resources path for UI Toolkit rich-text gradients.
+            // Do not trust older/project-local paths passed by previous importer builds.
+            _textGradientFolderPath = "Assets/Resources/Color Gradient Presets";
             _report = report;
         }
 
