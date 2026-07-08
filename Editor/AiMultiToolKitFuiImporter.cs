@@ -1691,14 +1691,12 @@ namespace MTK.FigmaUIImport
             }
 
             _uss.AppendLine("." + _screenClass + " {");
-            if (screenWidth > 0) _uss.AppendLine("  width: " + Num(screenWidth) + "px;"); else _uss.AppendLine("  width: 100%;");
-            if (screenHeight > 0) _uss.AppendLine("  height: " + Num(screenHeight) + "px;"); else _uss.AppendLine("  height: 100%;");
-            if (screenWidth > 0) _uss.AppendLine("  min-width: " + Num(screenWidth) + "px;");
-            if (screenHeight > 0) _uss.AppendLine("  min-height: " + Num(screenHeight) + "px;");
-            if (screenWidth > 0) _uss.AppendLine("  max-width: " + Num(screenWidth) + "px;");
-            if (screenHeight > 0) _uss.AppendLine("  max-height: " + Num(screenHeight) + "px;");
-            _uss.AppendLine("  flex-grow: 0;");
-            _uss.AppendLine("  flex-shrink: 0;");
+            _uss.AppendLine("  width: 100%;");
+            _uss.AppendLine("  height: 100%;");
+            _uss.AppendLine("  min-width: 0;");
+            _uss.AppendLine("  min-height: 0;");
+            _uss.AppendLine("  flex-grow: 1;");
+            _uss.AppendLine("  flex-shrink: 1;");
             _uss.AppendLine("  position: relative;");
             _uss.AppendLine("  overflow: hidden;");
             _uss.AppendLine("}");
@@ -1730,7 +1728,7 @@ namespace MTK.FigmaUIImport
             _uss.AppendLine("}");
             _uss.AppendLine();
 
-            var rootXml = BuildElementXml(root, 1, true, "root", null);
+            var rootXml = BuildElementXml(root, 1, true, "root", null, null);
             var uxml = new StringBuilder();
             uxml.AppendLine("<ui:UXML xmlns:ui=\"UnityEngine.UIElements\" editor-extension-mode=\"False\">");
             uxml.AppendLine("    <Style src=\"project://database/" + XmlEscape(AiFuiImporterUtility.NormalizeAssetPath(_ussAssetPath)) + "\" />");
@@ -1770,7 +1768,7 @@ namespace MTK.FigmaUIImport
         }
 
 
-        private string BuildElementXml(Dictionary<string, object> element, int indent, bool isRoot, string parentLayoutMode, Dictionary<string, object> parentBounds)
+        private string BuildElementXml(Dictionary<string, object> element, int indent, bool isRoot, string parentLayoutMode, Dictionary<string, object> parentBounds, Dictionary<string, object> parentElement)
         {
             var rawType = NormalizeType(FuiJson.GetString(element, "elementType", "Panel"));
             var childList = FuiJson.GetArray(element, "children");
@@ -1801,23 +1799,18 @@ namespace MTK.FigmaUIImport
             if (IsAtomicLayered(element)) classes.Add("fui_layered");
             if (isRoot) classes.Add(_screenClass);
 
-            AppendStyle(element, className, type, isRoot, parentLayoutMode, parentBounds);
+            AppendStyle(element, className, type, isRoot, parentLayoutMode, parentBounds, parentElement);
 
             var canHaveChildren = CanHaveChildren(type);
             var pad = new string(' ', indent * 4);
             var attrs = new StringBuilder();
             attrs.Append(" name=\"").Append(XmlEscape(name)).Append("\"");
             attrs.Append(" class=\"").Append(XmlEscape(string.Join(" ", classes.ToArray()))).Append("\"");
-            if (isRoot && _screenWidth > 0 && _screenHeight > 0)
+            if (isRoot)
             {
                 attrs.Append(" style=\"")
-                    .Append("width: ").Append(Num(_screenWidth)).Append("px; ")
-                    .Append("height: ").Append(Num(_screenHeight)).Append("px; ")
-                    .Append("min-width: ").Append(Num(_screenWidth)).Append("px; ")
-                    .Append("min-height: ").Append(Num(_screenHeight)).Append("px; ")
-                    .Append("max-width: ").Append(Num(_screenWidth)).Append("px; ")
-                    .Append("max-height: ").Append(Num(_screenHeight)).Append("px; ")
-                    .Append("flex-grow: 0; flex-shrink: 0; position: relative; overflow: hidden;\"");
+                    .Append("width: 100%; height: 100%; min-width: 0; min-height: 0; ")
+                    .Append("flex-grow: 1; flex-shrink: 1; position: relative; overflow: hidden;\"");
             }
             else
             {
@@ -1865,7 +1858,7 @@ namespace MTK.FigmaUIImport
             foreach (var child in OrderChildrenForUxml(element, childList, ownLayoutMode))
             {
                 var childDict = child as Dictionary<string, object>;
-                if (childDict != null) sb.Append(BuildElementXml(childDict, indent + 1, false, ownLayoutMode, FuiJson.GetObject(element, "bounds")));
+                if (childDict != null) sb.Append(BuildElementXml(childDict, indent + 1, false, ownLayoutMode, FuiJson.GetObject(element, "bounds"), element));
             }
             sb.Append(pad).Append("</").Append(tag).AppendLine(">");
             return sb.ToString();
@@ -1909,7 +1902,7 @@ namespace MTK.FigmaUIImport
             return string.Join("; ", parts) + (parts.Count > 0 ? ";" : string.Empty);
         }
 
-        private void AppendStyle(Dictionary<string, object> element, string className, string type, bool isRoot, string parentLayoutMode, Dictionary<string, object> parentBounds)
+        private void AppendStyle(Dictionary<string, object> element, string className, string type, bool isRoot, string parentLayoutMode, Dictionary<string, object> parentBounds, Dictionary<string, object> parentElement)
         {
             var bounds = FuiJson.GetObject(element, "bounds");
             var layout = FuiJson.GetObject(element, "layout");
@@ -1918,17 +1911,7 @@ namespace MTK.FigmaUIImport
             var assetRef = FuiJson.GetObject(element, "assetRef");
             var width = FuiJson.GetDouble(bounds, "width", 0);
             var height = FuiJson.GetDouble(bounds, "height", 0);
-            var scenario = FuiJson.GetString(anchor, "scenario", string.Empty);
-            var parentAbsolute = string.Equals(parentLayoutMode, "absolute", StringComparison.OrdinalIgnoreCase);
-            // Figma coordinates are absolute within the selected screen. For pixel-perfect UI Builder output,
-            // every non-root element is positioned locally relative to its parent. Flex metadata stays in the FUI
-            // for future adaptive tooling, but the generated UXML/USS must visually match Figma first.
-            var forceAbsolute = !isRoot
-                || parentAbsolute
-                || scenario == "A_FULL_STRETCH_BACKGROUND"
-                || scenario == "B_BOTTOM_RIGHT"
-                || scenario == "ABSOLUTE_FALLBACK"
-                || scenario.StartsWith("MODAL_", StringComparison.OrdinalIgnoreCase);
+            var useAbsolute = ShouldUseAbsoluteLayout(element, isRoot, parentLayoutMode);
 
             if (isRoot)
                 _uss.AppendLine("." + className + " {");
@@ -1937,39 +1920,23 @@ namespace MTK.FigmaUIImport
 
             if (isRoot)
             {
-                var rootWidth = _screenWidth > 0 ? _screenWidth : width;
-                var rootHeight = _screenHeight > 0 ? _screenHeight : height;
-                if (rootWidth > 0) AppendPx("width", rootWidth); else _uss.AppendLine("  width: 100%;");
-                if (rootHeight > 0) AppendPx("height", rootHeight); else _uss.AppendLine("  height: 100%;");
-                if (rootWidth > 0) AppendPx("min-width", rootWidth);
-                if (rootHeight > 0) AppendPx("min-height", rootHeight);
-                if (rootWidth > 0) AppendPx("max-width", rootWidth);
-                if (rootHeight > 0) AppendPx("max-height", rootHeight);
-                _uss.AppendLine("  flex-grow: 0;");
-                _uss.AppendLine("  flex-shrink: 0;");
+                _uss.AppendLine("  width: 100%;");
+                _uss.AppendLine("  height: 100%;");
+                _uss.AppendLine("  min-width: 0;");
+                _uss.AppendLine("  min-height: 0;");
+                _uss.AppendLine("  flex-grow: 1;");
+                _uss.AppendLine("  flex-shrink: 1;");
                 _uss.AppendLine("  position: relative;");
                 _uss.AppendLine("  overflow: hidden;");
             }
-            else if (forceAbsolute)
+            else if (useAbsolute)
             {
                 _uss.AppendLine("  position: absolute;");
                 AppendAbsoluteAnchor(anchor, bounds, parentBounds, width, height);
             }
             else
             {
-                _uss.AppendLine("  position: relative;");
-                if (scenario == "C_FULL_WIDTH_FIXED_HEIGHT")
-                {
-                    _uss.AppendLine("  align-self: stretch;");
-                    AppendPx("height", height);
-                }
-                else
-                {
-                    AppendPx("width", width);
-                    AppendPx("height", height);
-                    _uss.AppendLine("  flex-shrink: 0;");
-                    if (scenario == "D_CENTER_CONTENT") _uss.AppendLine("  align-self: center;");
-                }
+                AppendRelativeAdaptiveLayout(element, parentElement, parentLayoutMode, width, height, type);
             }
 
             AppendLayout(layout);
@@ -1999,74 +1966,292 @@ namespace MTK.FigmaUIImport
             _uss.AppendLine();
         }
 
+
+        private bool ShouldUseAbsoluteLayout(Dictionary<string, object> element, bool isRoot, string parentLayoutMode)
+        {
+            if (isRoot || element == null) return false;
+            if (string.Equals(parentLayoutMode, "absolute", StringComparison.OrdinalIgnoreCase)) return true;
+            if (IsAtomicLayered(element)) return true;
+
+            var layout = FuiJson.GetObject(element, "layout");
+            var ownMode = FuiJson.GetString(layout, "mode", string.Empty);
+            if (ownMode.Equals("absolute", StringComparison.OrdinalIgnoreCase)) return true;
+
+            var anchor = FuiJson.GetObject(element, "anchor");
+            var scenario = FuiJson.GetString(anchor, "scenario", string.Empty);
+            if (scenario == "A_FULL_STRETCH_BACKGROUND" || scenario == "B_BOTTOM_RIGHT") return true;
+            if (scenario.StartsWith("MODAL_", StringComparison.OrdinalIgnoreCase)) return true;
+
+            // A regular child can have an ABSOLUTE_FALLBACK anchor because its distance to
+            // the parent edges is not meaningful. If the parent was inferred as Row/Column,
+            // keep the child in flex flow and preserve the local gap through margins.
+            return false;
+        }
+
+        private void AppendRelativeAdaptiveLayout(Dictionary<string, object> element, Dictionary<string, object> parentElement, string parentLayoutMode, double width, double height, string type)
+        {
+            var parentLayout = parentElement != null ? FuiJson.GetObject(parentElement, "layout") : null;
+            var direction = CssKeyword(FuiJson.GetString(parentLayout, "flexDirection", "column"), "column");
+            var anchor = FuiJson.GetObject(element, "anchor");
+            var scenario = FuiJson.GetString(anchor, "scenario", string.Empty);
+            var sizing = FuiJson.GetObject(element, "sizing") ?? FuiJson.GetObject(FuiJson.GetObject(element, "adaptive"), "sizing");
+            var horizontal = FuiJson.GetString(sizing, "horizontal", string.Empty);
+            var vertical = FuiJson.GetString(sizing, "vertical", string.Empty);
+
+            if (string.IsNullOrEmpty(horizontal))
+            {
+                if (FuiJson.GetBool(anchor, "stretchX", false) || FuiJson.GetBool(anchor, "stretchHorizontal", false) || scenario == "C_FULL_WIDTH_FIXED_HEIGHT") horizontal = "Stretch";
+                else if (type == "Label" && !HasAssetRef(element)) horizontal = "Hug";
+                else horizontal = "Fixed";
+            }
+            if (string.IsNullOrEmpty(vertical))
+            {
+                if (FuiJson.GetBool(anchor, "stretchY", false) || FuiJson.GetBool(anchor, "stretchVertical", false)) vertical = "Stretch";
+                else if (type == "Label") vertical = "Hug";
+                else vertical = "Fixed";
+            }
+
+            horizontal = NormalizeSizingMode(horizontal);
+            vertical = NormalizeSizingMode(vertical);
+
+            _uss.AppendLine("  position: relative;");
+            AppendFlowMargins(element, parentElement, direction);
+
+            var parentIsRow = direction == "row";
+            var mainSizing = parentIsRow ? horizontal : vertical;
+            var crossSizing = parentIsRow ? vertical : horizontal;
+            var mainProperty = parentIsRow ? "width" : "height";
+            var crossProperty = parentIsRow ? "height" : "width";
+            var mainValue = parentIsRow ? width : height;
+            var crossValue = parentIsRow ? height : width;
+
+            if (mainSizing == "Fill" || mainSizing == "Stretch")
+            {
+                _uss.AppendLine("  flex-grow: 1;");
+                _uss.AppendLine("  flex-shrink: 1;");
+                _uss.AppendLine("  flex-basis: 0;");
+                _uss.AppendLine("  min-" + mainProperty + ": 0;");
+            }
+            else if (mainSizing == "Hug")
+            {
+                _uss.AppendLine("  flex-grow: 0;");
+                _uss.AppendLine("  flex-shrink: 0;");
+                if (type == "Image" || HasAssetRef(element)) AppendPx(mainProperty, mainValue);
+            }
+            else
+            {
+                AppendPx(mainProperty, mainValue);
+                _uss.AppendLine("  flex-grow: 0;");
+                _uss.AppendLine("  flex-shrink: 0;");
+            }
+
+            if (crossSizing == "Stretch" || crossSizing == "Fill")
+            {
+                _uss.AppendLine("  align-self: stretch;");
+                _uss.AppendLine("  min-" + crossProperty + ": 0;");
+            }
+            else if (crossSizing == "Hug")
+            {
+                if (type == "Image" || HasAssetRef(element)) AppendPx(crossProperty, crossValue);
+            }
+            else
+            {
+                AppendPx(crossProperty, crossValue);
+            }
+
+            if (scenario == "D_CENTER_CONTENT") _uss.AppendLine("  align-self: center;");
+        }
+
+        private static string NormalizeSizingMode(string mode)
+        {
+            var s = (mode ?? string.Empty).Trim().ToLowerInvariant();
+            if (s == "fill" || s == "grow" || s == "layoutgrow") return "Fill";
+            if (s == "hug" || s == "content" || s == "auto") return "Hug";
+            if (s == "stretch" || s == "stretched") return "Stretch";
+            return "Fixed";
+        }
+
+        private static bool HasAssetRef(Dictionary<string, object> element)
+        {
+            return FuiJson.GetObject(element, "assetRef") != null;
+        }
+
+        private void AppendFlowMargins(Dictionary<string, object> element, Dictionary<string, object> parentElement, string direction)
+        {
+            var margin = FuiJson.GetObject(element, "margin") ?? FuiJson.GetObject(FuiJson.GetObject(element, "adaptive"), "margin");
+            if (margin != null)
+            {
+                AppendOptionalMargin("margin-left", FuiJson.GetNullableDouble(margin, "left"));
+                AppendOptionalMargin("margin-right", FuiJson.GetNullableDouble(margin, "right"));
+                AppendOptionalMargin("margin-top", FuiJson.GetNullableDouble(margin, "top"));
+                AppendOptionalMargin("margin-bottom", FuiJson.GetNullableDouble(margin, "bottom"));
+                return;
+            }
+
+            if (parentElement == null) return;
+            var parentLayout = FuiJson.GetObject(parentElement, "layout");
+            var parentMode = FuiJson.GetString(parentLayout, "mode", "flex");
+            if (!parentMode.Equals("flex", StringComparison.OrdinalIgnoreCase)) return;
+
+            var children = FuiJson.GetArray(parentElement, "children");
+            if (children == null || children.Count <= 1) return;
+            var parentBounds = FuiJson.GetObject(parentElement, "bounds");
+            var ordered = OrderChildrenForUxml(parentElement, children, parentMode)
+                .Select(item => item as Dictionary<string, object>)
+                .Where(child => child != null && !ShouldUseAbsoluteLayout(child, false, parentMode))
+                .ToList();
+            var index = ordered.IndexOf(element);
+            if (index <= 0) return;
+
+            var currentBounds = FuiJson.GetObject(element, "bounds");
+            var previousBounds = FuiJson.GetObject(ordered[index - 1], "bounds");
+            if (currentBounds == null || previousBounds == null) return;
+
+            if (direction == "row")
+            {
+                var gap = FuiJson.GetDouble(currentBounds, "x", 0) - (FuiJson.GetDouble(previousBounds, "x", 0) + FuiJson.GetDouble(previousBounds, "width", 0));
+                if (gap > 0.5) AppendPx("margin-left", Math.Round(gap));
+            }
+            else
+            {
+                var gap = FuiJson.GetDouble(currentBounds, "y", 0) - (FuiJson.GetDouble(previousBounds, "y", 0) + FuiJson.GetDouble(previousBounds, "height", 0));
+                if (gap > 0.5) AppendPx("margin-top", Math.Round(gap));
+            }
+        }
+
+        private void AppendOptionalMargin(string property, double? value)
+        {
+            if (value.HasValue && Math.Abs(value.Value) > 0.001) AppendPx(property, value.Value);
+        }
+
         private void AppendAbsoluteAnchor(Dictionary<string, object> anchor, Dictionary<string, object> bounds, Dictionary<string, object> parentBounds, double width, double height)
         {
+            bounds = bounds ?? new Dictionary<string, object>();
+            parentBounds = parentBounds ?? new Dictionary<string, object>();
             var localX = FuiJson.GetDouble(bounds, "x", 0) - FuiJson.GetDouble(parentBounds, "x", 0);
             var localY = FuiJson.GetDouble(bounds, "y", 0) - FuiJson.GetDouble(parentBounds, "y", 0);
             var parentWidth = FuiJson.GetDouble(parentBounds, "width", 0);
             var parentHeight = FuiJson.GetDouble(parentBounds, "height", 0);
+            var computedRight = parentWidth > 0 ? Math.Max(0, parentWidth - localX - width) : 0;
+            var computedBottom = parentHeight > 0 ? Math.Max(0, parentHeight - localY - height) : 0;
 
             if (ShouldClampToParentBackground(anchor, bounds, parentBounds))
             {
                 _uss.AppendLine("  left: 0;");
+                _uss.AppendLine("  right: 0;");
                 _uss.AppendLine("  top: 0;");
-                if (parentWidth > 0) AppendPx("width", parentWidth);
-                else _uss.AppendLine("  right: 0;");
-                if (parentHeight > 0) AppendPx("height", parentHeight);
-                else _uss.AppendLine("  bottom: 0;");
+                _uss.AppendLine("  bottom: 0;");
                 _uss.AppendLine("  overflow: hidden;");
                 return;
             }
 
-            if (anchor != null)
+            var scenario = FuiJson.GetString(anchor, "scenario", string.Empty);
+            if (scenario == "MODAL_FULL_SCREEN_OVERLAY" || scenario == "A_FULL_STRETCH_BACKGROUND")
             {
-                var scenario = FuiJson.GetString(anchor, "scenario", string.Empty);
-                if (scenario == "MODAL_FULL_SCREEN_OVERLAY")
-                {
-                    _uss.AppendLine("  left: 0;");
-                    _uss.AppendLine("  top: 0;");
-                    if (parentWidth > 0) AppendPx("width", parentWidth); else _uss.AppendLine("  right: 0;");
-                    if (parentHeight > 0) AppendPx("height", parentHeight); else _uss.AppendLine("  bottom: 0;");
-                    _uss.AppendLine("  overflow: visible;");
-                    return;
-                }
-                if (scenario == "MODAL_CENTER_OVERLAY")
-                {
-                    var anchorLeft = FuiJson.GetNullableDouble(anchor, "left");
-                    var anchorTop = FuiJson.GetNullableDouble(anchor, "top");
-                    var anchorWidth = FuiJson.GetNullableDouble(anchor, "width");
-                    var anchorHeight = FuiJson.GetNullableDouble(anchor, "height");
-                    AppendPx("left", anchorLeft.HasValue ? anchorLeft.Value : localX);
-                    AppendPx("top", anchorTop.HasValue ? anchorTop.Value : localY);
-                    AppendPx("width", anchorWidth.HasValue ? anchorWidth.Value : width);
-                    AppendPx("height", anchorHeight.HasValue ? anchorHeight.Value : height);
-                    _uss.AppendLine("  overflow: visible;");
-                    return;
-                }
-                if (scenario == "A_FULL_STRETCH_BACKGROUND")
-                {
-                    _uss.AppendLine("  left: 0;");
-                    _uss.AppendLine("  right: 0;");
-                    _uss.AppendLine("  top: 0;");
-                    _uss.AppendLine("  bottom: 0;");
-                    _uss.AppendLine("  overflow: hidden;");
-                    return;
-                }
-                if (scenario == "B_BOTTOM_RIGHT")
-                {
-                    _uss.AppendLine("  right: " + Num(Math.Max(0, parentWidth - localX - width)) + "px;");
-                    _uss.AppendLine("  bottom: " + Num(Math.Max(0, parentHeight - localY - height)) + "px;");
-                    AppendPx("width", width);
-                    AppendPx("height", height);
-                    return;
-                }
+                _uss.AppendLine("  left: 0;");
+                _uss.AppendLine("  right: 0;");
+                _uss.AppendLine("  top: 0;");
+                _uss.AppendLine("  bottom: 0;");
+                _uss.AppendLine("  overflow: visible;");
+                return;
             }
 
-            // Figma exports bounds in screen coordinates. UI Toolkit absolute positioning is local to the parent.
-            AppendPx("left", localX);
-            AppendPx("top", localY);
-            AppendPx("width", width);
-            AppendPx("height", height);
+            if (scenario == "MODAL_CENTER_OVERLAY")
+            {
+                AppendCenteredAbsoluteAxis("horizontal", localX, width, parentWidth, true);
+                AppendCenteredAbsoluteAxis("vertical", localY, height, parentHeight, true);
+                _uss.AppendLine("  overflow: visible;");
+                return;
+            }
+
+            var left = FuiJson.GetNullableDouble(anchor, "left");
+            var right = FuiJson.GetNullableDouble(anchor, "right");
+            var top = FuiJson.GetNullableDouble(anchor, "top");
+            var bottom = FuiJson.GetNullableDouble(anchor, "bottom");
+            var centerX = FuiJson.GetBool(anchor, "centerX", false) || FuiJson.GetBool(anchor, "center", false) || FuiJson.GetString(anchor, "horizontal", string.Empty).Equals("center", StringComparison.OrdinalIgnoreCase);
+            var centerY = FuiJson.GetBool(anchor, "centerY", false) || FuiJson.GetBool(anchor, "center", false) || FuiJson.GetString(anchor, "vertical", string.Empty).Equals("center", StringComparison.OrdinalIgnoreCase);
+            var stretchX = FuiJson.GetBool(anchor, "stretchX", false) || FuiJson.GetBool(anchor, "stretchHorizontal", false) || FuiJson.GetString(anchor, "horizontal", string.Empty).Equals("stretch", StringComparison.OrdinalIgnoreCase);
+            var stretchY = FuiJson.GetBool(anchor, "stretchY", false) || FuiJson.GetBool(anchor, "stretchVertical", false) || FuiJson.GetString(anchor, "vertical", string.Empty).Equals("stretch", StringComparison.OrdinalIgnoreCase);
+
+            if (scenario == "B_BOTTOM_RIGHT")
+            {
+                AppendPx("right", right.HasValue ? Math.Max(0, right.Value) : computedRight);
+                AppendPx("bottom", bottom.HasValue ? Math.Max(0, bottom.Value) : computedBottom);
+                AppendPx("width", width);
+                AppendPx("height", height);
+                return;
+            }
+
+            if (stretchX || (left.HasValue && right.HasValue))
+            {
+                AppendPx("left", left.HasValue ? Math.Max(0, left.Value) : Math.Max(0, localX));
+                AppendPx("right", right.HasValue ? Math.Max(0, right.Value) : computedRight);
+            }
+            else if (centerX && parentWidth > 0)
+            {
+                AppendCenteredAbsoluteAxis("horizontal", localX, width, parentWidth, false);
+            }
+            else if (right.HasValue && !left.HasValue)
+            {
+                AppendPx("right", Math.Max(0, right.Value));
+                AppendPx("width", width);
+            }
+            else
+            {
+                AppendPx("left", left.HasValue ? left.Value : localX);
+                AppendPx("width", width);
+            }
+
+            if (stretchY || (top.HasValue && bottom.HasValue))
+            {
+                AppendPx("top", top.HasValue ? Math.Max(0, top.Value) : Math.Max(0, localY));
+                AppendPx("bottom", bottom.HasValue ? Math.Max(0, bottom.Value) : computedBottom);
+            }
+            else if (centerY && parentHeight > 0)
+            {
+                AppendCenteredAbsoluteAxis("vertical", localY, height, parentHeight, false);
+            }
+            else if (bottom.HasValue && !top.HasValue)
+            {
+                AppendPx("bottom", Math.Max(0, bottom.Value));
+                AppendPx("height", height);
+            }
+            else
+            {
+                AppendPx("top", top.HasValue ? top.Value : localY);
+                AppendPx("height", height);
+            }
+        }
+
+        private void AppendCenteredAbsoluteAxis(string axis, double localStart, double size, double parentSize, bool preferExactLocalFallback)
+        {
+            if (parentSize <= 0 || preferExactLocalFallback)
+            {
+                if (axis == "horizontal")
+                {
+                    AppendPx("left", localStart);
+                    AppendPx("width", size);
+                }
+                else
+                {
+                    AppendPx("top", localStart);
+                    AppendPx("height", size);
+                }
+                return;
+            }
+
+            if (axis == "horizontal")
+            {
+                _uss.AppendLine("  left: 50%;");
+                AppendPx("margin-left", -size / 2.0);
+                AppendPx("width", size);
+            }
+            else
+            {
+                _uss.AppendLine("  top: 50%;");
+                AppendPx("margin-top", -size / 2.0);
+                AppendPx("height", size);
+            }
         }
 
         private static bool ShouldClampToParentBackground(Dictionary<string, object> anchor, Dictionary<string, object> bounds, Dictionary<string, object> parentBounds)
@@ -2098,10 +2283,11 @@ namespace MTK.FigmaUIImport
             _uss.AppendLine("  flex-direction: " + CssKeyword(direction, "column") + ";");
             _uss.AppendLine("  justify-content: " + CssKeyword(justify, "flex-start") + ";");
             _uss.AppendLine("  align-items: " + CssKeyword(align, "flex-start") + ";");
+            var wrap = FuiJson.GetString(layout, "wrap", FuiJson.GetString(layout, "layoutWrap", string.Empty));
+            if (!string.IsNullOrEmpty(wrap) && !wrap.Equals("NO_WRAP", StringComparison.OrdinalIgnoreCase)) _uss.AppendLine("  flex-wrap: wrap;");
 
-            // UI Toolkit 6000.5 USS does not support CSS row-gap/column-gap.
-            // Pixel-perfect Figma export uses absolute child positions, so layout gap is intentionally not emitted.
-
+            // UI Toolkit USS has no reliable row-gap/column-gap in all target Unity versions.
+            // The generator therefore emits per-child margins based on measured sibling distances.
             var padding = FuiJson.GetObject(layout, "padding");
             if (padding != null)
             {
