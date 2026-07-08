@@ -2337,14 +2337,6 @@ namespace MTK.FigmaUIImport
             }
         }
 
-        private static bool IsPopupElement(Dictionary<string, object> element)
-        {
-            if (element == null) return false;
-            var type = FuiJson.GetString(element, "elementType", string.Empty);
-            var name = FuiJson.GetString(element, "name", string.Empty);
-            return type.Equals("Popup", StringComparison.OrdinalIgnoreCase) || name.StartsWith("popup", StringComparison.OrdinalIgnoreCase);
-        }
-
         private static bool IsBackdropElement(Dictionary<string, object> element)
         {
             if (element == null) return false;
