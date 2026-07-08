@@ -55,3 +55,17 @@ Color Gradient Presets
 ```
 
 Выбери `.fui` файл и нажми **Импортировать**.
+
+## Примечание для Unity Package Manager
+
+Внутренний `displayName` пакета не содержит символ `|`, чтобы Unity Project Browser на Windows не ловил `Illegal characters in path`. Название в окне инструмента остаётся `MTK | Figma UI Import`.
+
+## 1.1.5 — Adaptive UI Toolkit import
+
+- Root UXML теперь растягивается на размер панели (`width/height: 100%`) вместо фиксированного min/max размера макета.
+- Импортер использует `layout.mode=flex` из `.fui` и строит Row/Column через `flex-direction`, `justify-content`, `align-items`, `padding`.
+- Для дочерних элементов добавлена генерация sizing-режимов Fixed / Fill / Hug / Stretch.
+- Расстояния между соседями превращаются в `margin-left` / `margin-top`, потому что `gap` в USS поддерживается нестабильно между версиями Unity.
+- Absolute сохраняется для пересечений, layered/atomic компонентов, фонов, bottom-right элементов и modal overlay.
+- Anchors теперь используют left/right/top/bottom/stretch/center, а не только фиксированные width/height.
+
