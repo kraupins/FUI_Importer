@@ -245,6 +245,8 @@ namespace MTK.FigmaUIImport
     {
         private const string CanonicalResourcesRootPath = "Assets/Resources";
         private const string CanonicalTextGradientPresetFolderPath = "Assets/Resources/Color Gradient Presets";
+        private const string CanonicalTextGradientPresetPanelPath = "Assets/Resources/Color Gradient Presets";
+        private const string CanonicalTextGradientPresetResourcesPath = "Color Gradient Presets";
 
         public static List<FuiImportedProjectInfo> FindImportedProjects(string rootAssetPath)
         {
@@ -308,6 +310,7 @@ namespace MTK.FigmaUIImport
 
             EnsureGlobalTextGradientPresetFolder();
             MigrateLegacyProjectGradientPresets(outputRoot, report);
+            NormalizeExistingTextGradientPresetNames(report);
 
             WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(infoRoot, "manifest.json"), package.ManifestJson ?? "{}");
             WriteTextAsset(AiFuiImporterUtility.CombineAssetPath(infoRoot, "metadata.json"), package.MetadataJson ?? "{}");
@@ -796,7 +799,7 @@ namespace MTK.FigmaUIImport
                 var so = new SerializedObject(textSettings);
                 // Unity resolves <gradient="name"> through Panel Text Settings and Resources.Load.
                 // Gradient preset assets must live in Assets/Resources/Color Gradient Presets,
-                // while the Text Settings path itself remains Resources-relative.
+                // and the Panel Text Settings asset must point to that exact folder.
                 var resourcesFolder = GetGlobalResourcesRootPath();
                 AiFuiImporterUtility.EnsureAssetFolder(resourcesFolder);
                 AiFuiImporterUtility.EnsureAssetFolder(GetTextGradientPresetFolderPath());
@@ -805,12 +808,15 @@ namespace MTK.FigmaUIImport
                 AiFuiImporterUtility.EnsureAssetFolder(AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Sprite Assets"));
                 AiFuiImporterUtility.EnsureAssetFolder(AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Text Style Sheets"));
 
-                var colorGradientPresetPath = "Color Gradient Presets";
+                // Unity 6.5 resolves rich-text <gradient="..."> presets through this PanelTextSettings path.
+                // In the Inspector this is the Color Gradient Presets > Path field. Keep it as the
+                // canonical project asset path so it points exactly at Assets/Resources/Color Gradient Presets.
+                var colorGradientPresetPath = CanonicalTextGradientPresetPanelPath;
                 var fontAssetPath = "Fonts & Materials";
                 var spriteAssetPath = "Sprite Assets";
                 var styleSheetPath = "Text Style Sheets";
 
-                TrySetSerializedStringAny(so, new[]
+                var gradientPathAssigned = TrySetSerializedStringAny(so, new[]
                 {
                     "m_ColorGradientPresetsPath",
                     "m_ColorGradientPresetPath",
@@ -827,7 +833,11 @@ namespace MTK.FigmaUIImport
                     "defaultColorGradientPresetsPath",
                     "defaultColorGradientPresetPath"
                 }, colorGradientPresetPath);
-                TrySetSerializedStringPropertiesContaining(so, new[] { "gradient" }, new[] { "path" }, colorGradientPresetPath);
+                gradientPathAssigned |= TrySetSerializedStringPropertiesContaining(so, new[] { "gradient" }, new[] { "path" }, colorGradientPresetPath);
+                if (!gradientPathAssigned)
+                {
+                    AddReportWarning(report, "Не удалось автоматически прописать Color Gradient Presets Path в Panel Text Settings. Проверь вручную: " + colorGradientPresetPath);
+                }
 
                 TrySetSerializedStringAny(so, new[]
                 {
@@ -861,7 +871,10 @@ namespace MTK.FigmaUIImport
                 if (existing == null) AssetDatabase.CreateAsset(textSettings, assetPath);
                 else EditorUtility.SetDirty(textSettings);
                 AssetDatabase.SaveAssets();
-                AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceSynchronousImport);
+                AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
+                NormalizeExistingTextGradientPresetNames(report);
+                AssetDatabase.SaveAssets();
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
                 return AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(assetPath) ?? textSettings;
             }
             catch (Exception ex)
@@ -928,13 +941,17 @@ namespace MTK.FigmaUIImport
             if (textSettings != null)
             {
                 TrySetMemberObject(panelSettings, "textSettings", textSettings);
+                TrySetMemberObject(panelSettings, "panelTextSettings", textSettings);
                 var soText = new SerializedObject(panelSettings);
                 TrySetSerializedObjectReference(soText, "m_TextSettings", textSettings);
+                TrySetSerializedObjectReference(soText, "m_PanelTextSettings", textSettings);
                 TrySetSerializedObjectReference(soText, "textSettings", textSettings);
+                TrySetSerializedObjectReference(soText, "panelTextSettings", textSettings);
                 soText.ApplyModifiedPropertiesWithoutUndo();
             }
             EditorUtility.SetDirty(panelSettings);
             AssetDatabase.SaveAssets();
+            AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
 
             if (report != null) report.PanelSettingsAssetPath = assetPath;
             return panelSettings;
@@ -1039,6 +1056,39 @@ namespace MTK.FigmaUIImport
             catch (Exception ex)
             {
                 AddReportWarning(report, "Не удалось перенести старые gradient presets: " + ex.Message);
+            }
+        }
+
+        private static void NormalizeExistingTextGradientPresetNames(FuiImportReport report)
+        {
+            try
+            {
+                EnsureGlobalTextGradientPresetFolder();
+                if (!AssetDatabase.IsValidFolder(CanonicalTextGradientPresetFolderPath)) return;
+
+                var guids = AssetDatabase.FindAssets("", new[] { CanonicalTextGradientPresetFolderPath });
+                foreach (var guid in guids)
+                {
+                    var assetPath = AssetDatabase.GUIDToAssetPath(guid);
+                    if (string.IsNullOrEmpty(assetPath) || !assetPath.EndsWith(".asset", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(assetPath);
+                    if (asset == null) continue;
+                    var typeName = asset.GetType().FullName ?? asset.GetType().Name;
+                    if (typeName.IndexOf("Gradient", StringComparison.OrdinalIgnoreCase) < 0) continue;
+
+                    var expectedName = Path.GetFileNameWithoutExtension(assetPath);
+                    if (!string.Equals(asset.name, expectedName, StringComparison.Ordinal))
+                    {
+                        asset.name = expectedName;
+                        EditorUtility.SetDirty(asset);
+                        AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AddReportWarning(report, "Не удалось нормализовать имена gradient preset assets: " + ex.Message);
             }
         }
 
@@ -2727,8 +2777,8 @@ namespace MTK.FigmaUIImport
 
             // Unity 6.5 UI Toolkit/TextCore applies gradients only through rich text tags.
             // The returned value is still XML-escaped by the UXML writer, so the Label/Button stays editable.
-            // <color=#FFFFFFFF> prevents the element vertex color from multiplying the preset to transparent.
-            return "<color=#FFFFFFFF><gradient=\"" + presetName + "\">" + raw + "</gradient></color>";
+            // <color=white> prevents the element vertex color from multiplying the preset to transparent.
+            return "<color=white><gradient=\"" + presetName + "\">" + raw + "</gradient></color>";
         }
 
         private string EnsureTextGradientPreset(Dictionary<string, object> gradient, string elementName)
@@ -2751,12 +2801,16 @@ namespace MTK.FigmaUIImport
                 if (gradientType == null) return string.Empty;
                 var existing = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(assetPath);
                 var obj = existing != null ? existing : ScriptableObject.CreateInstance(gradientType);
+                if (obj == null) return string.Empty;
+                // <gradient="..."> resolves by the preset asset object name, not only by filename.
+                // Keep the internal ScriptableObject name exactly equal to the rich-text tag value.
+                obj.name = safeName;
                 ApplyTextGradientColors(obj, gradient);
                 if (existing == null) AssetDatabase.CreateAsset(obj, assetPath);
                 else EditorUtility.SetDirty(obj);
                 AssetDatabase.SaveAssets();
-                AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceSynchronousImport);
-                return safeName;
+                AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
+                return obj.name;
             }
             catch (Exception ex)
             {
