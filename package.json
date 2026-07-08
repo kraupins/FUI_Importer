@@ -1,8 +1,8 @@
 {
   "name": "com.mtk.fui-import",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "displayName": "MTK Figma UI Import",
-  "description": "Импорт из Figma с адаптивным Row/Column/Anchor/Sizing анализом для Unity UI Toolkit.",
+  "description": "Импорт из Figma с адаптивным Row/Column/Anchor/Sizing анализом для Unity UI Toolkit. Fixed corner controls and modal anchoring.",
   "unity": "6000.5",
   "author": {
     "name": "By Kraupin | Multi-Tool Kit"

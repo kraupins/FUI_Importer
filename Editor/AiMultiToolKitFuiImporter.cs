@@ -1932,7 +1932,7 @@ namespace MTK.FigmaUIImport
             else if (useAbsolute)
             {
                 _uss.AppendLine("  position: absolute;");
-                AppendAbsoluteAnchor(anchor, bounds, parentBounds, width, height);
+                AppendAbsoluteAnchor(anchor, bounds, parentBounds, width, height, element, type, parentElement);
             }
             else
             {
@@ -2018,8 +2018,16 @@ namespace MTK.FigmaUIImport
             AppendFlowMargins(element, parentElement, direction);
 
             var parentIsRow = direction == "row";
+            if (IsSpacerElement(element, type))
+            {
+                if (parentIsRow) horizontal = "Fill";
+                else vertical = "Fill";
+            }
+
             var mainSizing = parentIsRow ? horizontal : vertical;
             var crossSizing = parentIsRow ? vertical : horizontal;
+            if ((crossSizing == "Stretch" || crossSizing == "Fill") && ShouldKeepFixedCrossAxis(element, parentElement, parentIsRow, type))
+                crossSizing = "Fixed";
             var mainProperty = parentIsRow ? "width" : "height";
             var crossProperty = parentIsRow ? "height" : "width";
             var mainValue = parentIsRow ? width : height;
@@ -2027,7 +2035,8 @@ namespace MTK.FigmaUIImport
 
             if (mainSizing == "Fill" || mainSizing == "Stretch")
             {
-                _uss.AppendLine("  flex-grow: 1;");
+                var spacerGrow = IsSpacerElement(element, type) ? Math.Max(1.0, Math.Round(mainValue)) : 1.0;
+                _uss.AppendLine("  flex-grow: " + Num(spacerGrow) + ";");
                 _uss.AppendLine("  flex-shrink: 1;");
                 _uss.AppendLine("  flex-basis: 0;");
                 _uss.AppendLine("  min-" + mainProperty + ": 0;");
@@ -2060,6 +2069,36 @@ namespace MTK.FigmaUIImport
             }
 
             if (scenario == "D_CENTER_CONTENT") _uss.AppendLine("  align-self: center;");
+        }
+
+
+        private static bool IsSpacerElement(Dictionary<string, object> element, string type)
+        {
+            if (element == null) return false;
+            var rawType = FuiJson.GetString(element, "elementType", string.Empty);
+            var name = FuiJson.GetString(element, "name", string.Empty);
+            return type.Equals("Spacer", StringComparison.OrdinalIgnoreCase)
+                || rawType.Equals("Spacer", StringComparison.OrdinalIgnoreCase)
+                || name.StartsWith("spacer", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ShouldKeepFixedCrossAxis(Dictionary<string, object> element, Dictionary<string, object> parentElement, bool parentIsRow, string type)
+        {
+            if (element == null || parentElement == null) return false;
+            if (IsSpacerElement(element, type)) return false;
+            var bounds = FuiJson.GetObject(element, "bounds");
+            var parentBounds = FuiJson.GetObject(parentElement, "bounds");
+            if (bounds == null || parentBounds == null) return false;
+            var childCross = parentIsRow ? FuiJson.GetDouble(bounds, "height", 0) : FuiJson.GetDouble(bounds, "width", 0);
+            var parentCross = parentIsRow ? FuiJson.GetDouble(parentBounds, "height", 0) : FuiJson.GetDouble(parentBounds, "width", 0);
+            if (childCross <= 0 || parentCross <= 0) return false;
+            var rawType = FuiJson.GetString(element, "elementType", string.Empty);
+            var isControlOrArt = rawType.Equals("Button", StringComparison.OrdinalIgnoreCase)
+                || type.Equals("Button", StringComparison.OrdinalIgnoreCase)
+                || type.Equals("Image", StringComparison.OrdinalIgnoreCase)
+                || HasAssetRef(element);
+            if (isControlOrArt && childCross < parentCross - 1.0) return true;
+            return childCross / parentCross < 0.975;
         }
 
         private static string NormalizeSizingMode(string mode)
@@ -2124,7 +2163,7 @@ namespace MTK.FigmaUIImport
             if (value.HasValue && Math.Abs(value.Value) > 0.001) AppendPx(property, value.Value);
         }
 
-        private void AppendAbsoluteAnchor(Dictionary<string, object> anchor, Dictionary<string, object> bounds, Dictionary<string, object> parentBounds, double width, double height)
+        private void AppendAbsoluteAnchor(Dictionary<string, object> anchor, Dictionary<string, object> bounds, Dictionary<string, object> parentBounds, double width, double height, Dictionary<string, object> element, string type, Dictionary<string, object> parentElement)
         {
             bounds = bounds ?? new Dictionary<string, object>();
             parentBounds = parentBounds ?? new Dictionary<string, object>();
@@ -2168,59 +2207,155 @@ namespace MTK.FigmaUIImport
             var right = FuiJson.GetNullableDouble(anchor, "right");
             var top = FuiJson.GetNullableDouble(anchor, "top");
             var bottom = FuiJson.GetNullableDouble(anchor, "bottom");
-            var centerX = FuiJson.GetBool(anchor, "centerX", false) || FuiJson.GetBool(anchor, "center", false) || FuiJson.GetString(anchor, "horizontal", string.Empty).Equals("center", StringComparison.OrdinalIgnoreCase);
-            var centerY = FuiJson.GetBool(anchor, "centerY", false) || FuiJson.GetBool(anchor, "center", false) || FuiJson.GetString(anchor, "vertical", string.Empty).Equals("center", StringComparison.OrdinalIgnoreCase);
-            var stretchX = FuiJson.GetBool(anchor, "stretchX", false) || FuiJson.GetBool(anchor, "stretchHorizontal", false) || FuiJson.GetString(anchor, "horizontal", string.Empty).Equals("stretch", StringComparison.OrdinalIgnoreCase);
-            var stretchY = FuiJson.GetBool(anchor, "stretchY", false) || FuiJson.GetBool(anchor, "stretchVertical", false) || FuiJson.GetString(anchor, "vertical", string.Empty).Equals("stretch", StringComparison.OrdinalIgnoreCase);
+
+            var resolvedLeft = left.HasValue ? Math.Max(0, left.Value) : Math.Max(0, localX);
+            var resolvedRight = right.HasValue ? Math.Max(0, right.Value) : computedRight;
+            var resolvedTop = top.HasValue ? Math.Max(0, top.Value) : Math.Max(0, localY);
+            var resolvedBottom = bottom.HasValue ? Math.Max(0, bottom.Value) : computedBottom;
+
+            var rawCenterX = FuiJson.GetBool(anchor, "centerX", false) || FuiJson.GetBool(anchor, "center", false) || FuiJson.GetString(anchor, "horizontal", string.Empty).Equals("center", StringComparison.OrdinalIgnoreCase);
+            var rawCenterY = FuiJson.GetBool(anchor, "centerY", false) || FuiJson.GetBool(anchor, "center", false) || FuiJson.GetString(anchor, "vertical", string.Empty).Equals("center", StringComparison.OrdinalIgnoreCase);
+            var rawStretchX = FuiJson.GetBool(anchor, "stretchX", false) || FuiJson.GetBool(anchor, "stretchHorizontal", false) || FuiJson.GetString(anchor, "horizontal", string.Empty).Equals("stretch", StringComparison.OrdinalIgnoreCase);
+            var rawStretchY = FuiJson.GetBool(anchor, "stretchY", false) || FuiJson.GetBool(anchor, "stretchVertical", false) || FuiJson.GetString(anchor, "vertical", string.Empty).Equals("stretch", StringComparison.OrdinalIgnoreCase);
+
+            var stretchX = rawStretchX && ShouldUseAbsoluteStretchAxis(resolvedLeft, resolvedRight, width, parentWidth, scenario, true);
+            var stretchY = rawStretchY && ShouldUseAbsoluteStretchAxis(resolvedTop, resolvedBottom, height, parentHeight, scenario, false);
+            var centerX = !stretchX && (rawCenterX || IsApproximatelyEqual(resolvedLeft, resolvedRight, GetAnchorCompareTolerance(parentWidth, width)));
+            var centerY = !stretchY && (rawCenterY || IsApproximatelyEqual(resolvedTop, resolvedBottom, GetAnchorCompareTolerance(parentHeight, height)));
+
+            if (IsDirectModalOverlayChild(parentElement, element))
+            {
+                AppendCenteredAbsoluteAxisWithOffset("horizontal", width, parentWidth, ((localX + width / 2.0) - (parentWidth / 2.0)));
+                AppendCenteredAbsoluteAxisWithOffset("vertical", height, parentHeight, ((localY + height / 2.0) - (parentHeight / 2.0)));
+                _uss.AppendLine("  overflow: visible;");
+                return;
+            }
 
             if (scenario == "B_BOTTOM_RIGHT")
             {
-                AppendPx("right", right.HasValue ? Math.Max(0, right.Value) : computedRight);
-                AppendPx("bottom", bottom.HasValue ? Math.Max(0, bottom.Value) : computedBottom);
+                AppendPx("right", resolvedRight);
+                AppendPx("bottom", resolvedBottom);
                 AppendPx("width", width);
                 AppendPx("height", height);
                 return;
             }
 
-            if (stretchX || (left.HasValue && right.HasValue))
+            if (stretchX)
             {
-                AppendPx("left", left.HasValue ? Math.Max(0, left.Value) : Math.Max(0, localX));
-                AppendPx("right", right.HasValue ? Math.Max(0, right.Value) : computedRight);
+                AppendPx("left", resolvedLeft);
+                AppendPx("right", resolvedRight);
             }
             else if (centerX && parentWidth > 0)
             {
-                AppendCenteredAbsoluteAxis("horizontal", localX, width, parentWidth, false);
+                AppendCenteredAbsoluteAxisWithOffset("horizontal", width, parentWidth, ((localX + width / 2.0) - (parentWidth / 2.0)));
             }
-            else if (right.HasValue && !left.HasValue)
+            else if (ShouldPreferEndAnchor(resolvedLeft, resolvedRight, width, parentWidth))
             {
-                AppendPx("right", Math.Max(0, right.Value));
+                AppendPx("right", resolvedRight);
                 AppendPx("width", width);
             }
             else
             {
-                AppendPx("left", left.HasValue ? left.Value : localX);
+                AppendPx("left", resolvedLeft);
                 AppendPx("width", width);
             }
 
-            if (stretchY || (top.HasValue && bottom.HasValue))
+            if (stretchY)
             {
-                AppendPx("top", top.HasValue ? Math.Max(0, top.Value) : Math.Max(0, localY));
-                AppendPx("bottom", bottom.HasValue ? Math.Max(0, bottom.Value) : computedBottom);
+                AppendPx("top", resolvedTop);
+                AppendPx("bottom", resolvedBottom);
             }
             else if (centerY && parentHeight > 0)
             {
-                AppendCenteredAbsoluteAxis("vertical", localY, height, parentHeight, false);
+                AppendCenteredAbsoluteAxisWithOffset("vertical", height, parentHeight, ((localY + height / 2.0) - (parentHeight / 2.0)));
             }
-            else if (bottom.HasValue && !top.HasValue)
+            else if (ShouldPreferEndAnchor(resolvedTop, resolvedBottom, height, parentHeight))
             {
-                AppendPx("bottom", Math.Max(0, bottom.Value));
+                AppendPx("bottom", resolvedBottom);
                 AppendPx("height", height);
             }
             else
             {
-                AppendPx("top", top.HasValue ? top.Value : localY);
+                AppendPx("top", resolvedTop);
                 AppendPx("height", height);
             }
+        }
+
+
+        private static double GetAnchorCompareTolerance(double parentSize, double elementSize)
+        {
+            var baseSize = parentSize > 0 ? parentSize : elementSize;
+            return Math.Max(3, Math.Min(32, baseSize * 0.035));
+        }
+
+        private static bool IsApproximatelyEqual(double a, double b, double tolerance)
+        {
+            return Math.Abs(a - b) <= Math.Max(0.001, tolerance);
+        }
+
+        private static bool ShouldUseAbsoluteStretchAxis(double startInset, double endInset, double size, double parentSize, string scenario, bool horizontal)
+        {
+            if (parentSize <= 0 || size <= 0) return false;
+            if (string.Equals(scenario, "A_FULL_STRETCH_BACKGROUND", StringComparison.OrdinalIgnoreCase)) return true;
+            if (horizontal && string.Equals(scenario, "C_FULL_WIDTH_FIXED_HEIGHT", StringComparison.OrdinalIgnoreCase)) return true;
+            if (size >= parentSize - 1.0) return true;
+            // Do not stretch square/corner buttons just because they have equal small offsets
+            // inside a header bar. Stretch is reserved for real fills/backgrounds.
+            return size / parentSize >= 0.975 && startInset <= Math.Max(3, parentSize * 0.02) && endInset <= Math.Max(3, parentSize * 0.02);
+        }
+
+        private static bool ShouldPreferEndAnchor(double startInset, double endInset, double size, double parentSize)
+        {
+            if (parentSize <= 0 || size <= 0) return false;
+            var tolerance = GetAnchorCompareTolerance(parentSize, size);
+            if (endInset <= tolerance && startInset > tolerance) return true;
+            if (startInset <= tolerance && endInset > tolerance) return false;
+            if (Math.Abs(startInset - endInset) <= tolerance) return false;
+            return endInset < startInset && endInset <= Math.Max(tolerance * 2.0, Math.Min(parentSize * 0.22, size * 0.85));
+        }
+
+        private void AppendCenteredAbsoluteAxisWithOffset(string axis, double size, double parentSize, double centerOffset)
+        {
+            if (parentSize <= 0)
+            {
+                if (axis == "horizontal") AppendPx("width", size);
+                else AppendPx("height", size);
+                return;
+            }
+
+            if (axis == "horizontal")
+            {
+                _uss.AppendLine("  left: 50%;");
+                AppendPx("margin-left", centerOffset - size / 2.0);
+                AppendPx("width", size);
+            }
+            else
+            {
+                _uss.AppendLine("  top: 50%;");
+                AppendPx("margin-top", centerOffset - size / 2.0);
+                AppendPx("height", size);
+            }
+        }
+
+        private static bool IsPopupElement(Dictionary<string, object> element)
+        {
+            if (element == null) return false;
+            var type = FuiJson.GetString(element, "elementType", string.Empty);
+            var name = FuiJson.GetString(element, "name", string.Empty);
+            return type.Equals("Popup", StringComparison.OrdinalIgnoreCase) || name.StartsWith("popup", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsBackdropElement(Dictionary<string, object> element)
+        {
+            if (element == null) return false;
+            var name = FuiJson.GetString(element, "name", string.Empty).ToLowerInvariant();
+            return name == "background" || name.StartsWith("background_") || name.Contains("overlay") || name.Contains("backdrop");
+        }
+
+        private static bool IsDirectModalOverlayChild(Dictionary<string, object> parentElement, Dictionary<string, object> element)
+        {
+            if (!IsPopupElement(parentElement) || IsBackdropElement(element)) return false;
+            return true;
         }
 
         private void AppendCenteredAbsoluteAxis(string axis, double localStart, double size, double parentSize, bool preferExactLocalFallback)
