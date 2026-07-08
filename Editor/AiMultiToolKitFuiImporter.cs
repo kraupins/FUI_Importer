@@ -105,7 +105,7 @@ namespace MTK.FigmaUIImport
             EditorGUILayout.Space(12);
             EditorGUILayout.LabelField("Что создаётся", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "Папка Assets/<PROJECT_NAME>/ с UXML, USS, Textures, Fonts, Resources/Color Gradient Presets, PanelSettings, Scenes и Info.\n" +
+                "Папка Assets/<PROJECT_NAME>/ с UXML, USS, Textures, Fonts, PanelSettings и Info. Градиенты — в Assets/Resources, сцены — в Assets/Scenes.\n" +
                 "Тексты остаются редактируемыми Label/Button. Градиенты текста импортируются как TextCore Color Gradient presets и применяются через Unity rich text.",
                 MessageType.None);
 
@@ -310,12 +310,15 @@ namespace MTK.FigmaUIImport
 
             var assetPathMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var fontPathMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var suppressedWrapperAssetPaths = FuiElementRenderRules.CollectSuppressedOwnAssetPaths(package.Screens);
             foreach (var file in package.AssetFiles)
             {
+                var packagePath = AiFuiImporterUtility.NormalizePackagePath(file.Path);
+                if (suppressedWrapperAssetPaths.Contains(packagePath)) continue;
                 var relative = AiFuiImporterUtility.TrimPrefix(file.Path, "assets/");
                 var target = AiFuiImporterUtility.CombineAssetPath(textureRoot, AiFuiImporterUtility.SanitizeRelativePath(relative, "asset.png"));
                 WriteBinaryAsset(target, file.Bytes);
-                assetPathMap[AiFuiImporterUtility.NormalizePackagePath(file.Path)] = target;
+                assetPathMap[packagePath] = target;
                 report.CopiedTextureCount++;
             }
 
@@ -371,7 +374,7 @@ namespace MTK.FigmaUIImport
                 var uxmlPath = AiFuiImporterUtility.CombineAssetPath(uxmlRoot, screenName + ".uxml");
                 var sourcePath = AiFuiImporterUtility.CombineAssetPath(infoRoot, "screen_" + screenName + ".json");
 
-                var textGradientFolder = AiFuiImporterUtility.CombineAssetPath(AiFuiImporterUtility.CombineAssetPath(outputRoot, "Resources"), "Color Gradient Presets");
+                var textGradientFolder = GetTextGradientPresetFolderPath();
                 AiFuiImporterUtility.EnsureAssetFolder(textGradientFolder);
                 var generator = new FuiUiToolkitGenerator(screen, ussPath, assetPathMap, fontPathMap, package.FontMetadata, textGradientFolder, report);
                 var generated = generator.Generate();
@@ -785,10 +788,10 @@ namespace MTK.FigmaUIImport
                 if (textSettings == null) return null;
 
                 var so = new SerializedObject(textSettings);
-                // Unity 6.5 resolves <gradient="name"> through Panel Text Settings and Resources.Load.
-                // The preset assets are stored in Assets/<Project>/Resources/Color Gradient Presets,
-                // but the Text Settings path itself must be the Resources-relative folder name.
-                var resourcesFolder = AiFuiImporterUtility.CombineAssetPath(outputRoot, "Resources");
+                // Unity resolves <gradient="name"> through Panel Text Settings and Resources.Load.
+                // Gradient preset assets must live in Assets/Resources/Color Gradient Presets,
+                // while the Text Settings path itself remains Resources-relative.
+                var resourcesFolder = GetGlobalResourcesRootPath();
                 AiFuiImporterUtility.EnsureAssetFolder(resourcesFolder);
                 AiFuiImporterUtility.EnsureAssetFolder(AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Color Gradient Presets"));
                 AiFuiImporterUtility.EnsureAssetFolder(AiFuiImporterUtility.CombineAssetPath(resourcesFolder, "Fonts & Materials"));
@@ -963,9 +966,10 @@ namespace MTK.FigmaUIImport
             }
             if (screens == null || screens.Count == 0) return;
 
-            var folder = AiFuiImporterUtility.CombineAssetPath(outputRoot, "Scenes");
+            var folder = GetGeneratedScenesFolderPath();
             AiFuiImporterUtility.EnsureAssetFolder(folder);
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            if (!EnsureCanCreateGeneratedScenes(report)) return;
 
             // Общая сцена со всеми экранами больше не создаётся: она мешала симуляции и могла
             // накладывать экраны друг на друга. Генерируем только отдельную сцену на каждый экран.
@@ -975,6 +979,65 @@ namespace MTK.FigmaUIImport
                 var scenePath = AiFuiImporterUtility.CombineAssetPath(folder, screen.Name + ".unity");
                 CreateSingleScreenScene(scenePath, screen, panelSettings, report);
             }
+        }
+
+        private static string GetGlobalResourcesRootPath()
+        {
+            return "Assets/Resources";
+        }
+
+        private static string GetTextGradientPresetFolderPath()
+        {
+            return AiFuiImporterUtility.CombineAssetPath(GetGlobalResourcesRootPath(), "Color Gradient Presets");
+        }
+
+        private static string GetGeneratedScenesFolderPath()
+        {
+            return "Assets/Scenes";
+        }
+
+        private static bool EnsureCanCreateGeneratedScenes(FuiImportReport report)
+        {
+            try
+            {
+                var activeScene = SceneManager.GetActiveScene();
+                if (!activeScene.IsValid() || !string.IsNullOrEmpty(activeScene.path)) return true;
+
+                var method = typeof(EditorSceneManager).GetMethod(
+                    "EnsureUntitledSceneHasBeenSaved",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
+                    null,
+                    new[] { typeof(string) },
+                    null);
+
+                bool ok;
+                try
+                {
+                    if (method != null)
+                    {
+                        ok = (bool)method.Invoke(null, new object[] { "Перед созданием FUI сцен нужно сохранить текущую Untitled сцену." });
+                    }
+                    else
+                    {
+                        ok = EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo();
+                    }
+                }
+                catch
+                {
+                    ok = EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo();
+                }
+
+                if (!ok)
+                {
+                    AddReportWarning(report, "Сцены не созданы: текущая Untitled сцена не была сохранена, а Unity не позволяет создавать additively новую сцену поверх несохранённой Untitled сцены.");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                AddReportWarning(report, "Проверка текущей сцены перед генерацией сцен не выполнена: " + ex.Message);
+            }
+            return true;
         }
 
         private static int GetDefaultActiveScreenIndex(List<FuiGeneratedScreenAsset> screens)
@@ -1639,6 +1702,74 @@ namespace MTK.FigmaUIImport
         public string Uss;
     }
 
+    internal static class FuiElementRenderRules
+    {
+        public static HashSet<string> CollectSuppressedOwnAssetPaths(IEnumerable<Dictionary<string, object>> screens)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (screens == null) return result;
+            foreach (var screen in screens)
+            {
+                if (screen == null) continue;
+                CollectSuppressedOwnAssetPaths(screen, result);
+            }
+            return result;
+        }
+
+        private static void CollectSuppressedOwnAssetPaths(Dictionary<string, object> element, HashSet<string> result)
+        {
+            if (element == null || result == null) return;
+            if (ShouldSuppressOwnAssetRef(element))
+            {
+                var assetRef = FuiJson.GetObject(element, "assetRef");
+                var path = FuiJson.GetString(assetRef, "path", string.Empty);
+                if (!string.IsNullOrEmpty(path)) result.Add(AiFuiImporterUtility.NormalizePackagePath(path));
+            }
+
+            var root = FuiJson.GetObject(element, "root");
+            if (root != null) CollectSuppressedOwnAssetPaths(root, result);
+
+            var children = FuiJson.GetArray(element, "children");
+            if (children == null) return;
+            foreach (var child in children)
+            {
+                var childDict = child as Dictionary<string, object>;
+                if (childDict != null) CollectSuppressedOwnAssetPaths(childDict, result);
+            }
+        }
+
+        public static bool ShouldSuppressOwnAssetRef(Dictionary<string, object> element)
+        {
+            if (element == null) return false;
+            var assetRef = FuiJson.GetObject(element, "assetRef");
+            if (assetRef == null) return false;
+
+            var name = (FuiJson.GetString(element, "name", string.Empty) + " " + FuiJson.GetString(element, "originalName", string.Empty)).ToLowerInvariant();
+            if (!(name.Contains("switch_handle") || (name.Contains("switch") && name.Contains("handle")))) return false;
+
+            var detection = FuiJson.GetObject(element, "detection");
+            var source = FuiJson.GetString(detection, "source", string.Empty);
+            if (!source.Equals("single-image-child", StringComparison.OrdinalIgnoreCase)) return false;
+
+            var children = FuiJson.GetArray(element, "children");
+            if (children == null || children.Count != 1) return false;
+            var child = children[0] as Dictionary<string, object>;
+            if (child == null || FuiJson.GetObject(child, "assetRef") == null) return false;
+
+            var bounds = FuiJson.GetObject(element, "bounds");
+            var childBounds = FuiJson.GetObject(child, "bounds");
+            if (bounds == null || childBounds == null) return true;
+
+            var width = FuiJson.GetDouble(bounds, "width", 0);
+            var height = FuiJson.GetDouble(bounds, "height", 0);
+            var childWidth = FuiJson.GetDouble(childBounds, "width", 0);
+            var childHeight = FuiJson.GetDouble(childBounds, "height", 0);
+            if (width <= 0 || height <= 0 || childWidth <= 0 || childHeight <= 0) return true;
+
+            return childWidth <= width + 1.0 && childHeight <= height + 1.0;
+        }
+    }
+
     internal sealed class FuiUiToolkitGenerator
     {
         private readonly Dictionary<string, object> _screen;
@@ -1869,7 +2000,7 @@ namespace MTK.FigmaUIImport
         {
             if (element == null) return string.Empty;
             var parts = new List<string>();
-            var assetRef = FuiJson.GetObject(element, "assetRef");
+            var assetRef = FuiElementRenderRules.ShouldSuppressOwnAssetRef(element) ? null : FuiJson.GetObject(element, "assetRef");
             var assetPath = ResolveAssetPath(assetRef);
             if (!string.IsNullOrEmpty(assetPath))
             {
@@ -1908,7 +2039,7 @@ namespace MTK.FigmaUIImport
             var layout = FuiJson.GetObject(element, "layout");
             var anchor = FuiJson.GetObject(element, "anchor");
             var style = FuiJson.GetObject(element, "style");
-            var assetRef = FuiJson.GetObject(element, "assetRef");
+            var assetRef = FuiElementRenderRules.ShouldSuppressOwnAssetRef(element) ? null : FuiJson.GetObject(element, "assetRef");
             var width = FuiJson.GetDouble(bounds, "width", 0);
             var height = FuiJson.GetDouble(bounds, "height", 0);
             var useAbsolute = ShouldUseAbsoluteLayout(element, isRoot, parentLayoutMode);
