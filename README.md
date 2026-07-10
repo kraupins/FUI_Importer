@@ -74,8 +74,18 @@ Color Gradient Presets/
 
 ## 1.1.7 — Text adaptive sizing and gradient path fixes
 
-- Для редактируемого текста `Label` и `Button` используется `white-space: nowrap`, поэтому текст не переносится на вторую строку.
-- Добавлен Unity UI Toolkit Best Fit: `-unity-text-auto-size: best-fit <min> <max>`. Если FUI не передал границы, минимум берётся как 50% исходного размера (не меньше 5 px), максимум — исходный размер.
-- Gradient preset assets создаются только в `Assets/Resources/Color Gradient Presets`.
-- В `Panel Text Settings > Color Gradient Presets > Path` записывается строго `Color Gradient Presets/`.
+- Для редактируемого текста `Label` и `Button` используется `white-space: nowrap`.
+- Добавлен Unity UI Toolkit Best Fit.
+- Gradient preset assets создаются в `Assets/Resources/Color Gradient Presets`.
+- В `Panel Text Settings` используется путь `Color Gradient Presets/`.
 - В `Panel Settings` используется `Screen Match Mode = Expand`.
+
+## 1.1.8 — Final text geometry and gradient fix
+
+- `Panel Text Settings` создаётся через фактический тип свойства `PanelSettings.textSettings`, поэтому `<gradient>` корректно разрешает preset assets вместо вывода rich-text тегов как обычного текста.
+- Rich Text включается для всех импортированных редактируемых `Label` и текстовых `Button`.
+- Имена gradient preset больше не содержат восьмизначный hash: используется читаемый формат `fui_gradient_<screen>_<element>` и числовой суффикс только при реальном повторе имени.
+- Абсолютные текстовые элементы используют точные `left/top/width/height` без центрирования через отрицательные половинные `margin-left` / `margin-top`.
+- Размер текстового контейнера учитывает Figma `renderBounds`, line height и исходный font size.
+- Для Hug-текста сохраняются импортированные ширина и высота, чтобы Best Fit измерял правильный прямоугольник.
+- Минимальный размер Best Fit зафиксирован на `10px`; максимум остаётся исходным размером текста из Figma.

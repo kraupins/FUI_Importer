@@ -780,9 +780,16 @@ namespace MTK.FigmaUIImport
         {
             try
             {
-                var textSettingsType = Type.GetType("UnityEngine.UIElements.TextSettings, UnityEngine.UIElementsModule")
+                const System.Reflection.BindingFlags textSettingsFlags =
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+                var panelTextSettingsProperty = typeof(PanelSettings).GetProperty("textSettings", textSettingsFlags);
+                var textSettingsType = panelTextSettingsProperty != null ? panelTextSettingsProperty.PropertyType : null;
+                textSettingsType = textSettingsType
                     ?? Type.GetType("UnityEngine.UIElements.PanelTextSettings, UnityEngine.UIElementsModule")
-                    ?? AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType("UnityEngine.UIElements.TextSettings") ?? a.GetType("UnityEngine.UIElements.PanelTextSettings")).FirstOrDefault(t => t != null);
+                    ?? Type.GetType("UnityEngine.UIElements.TextSettings, UnityEngine.UIElementsModule")
+                    ?? AppDomain.CurrentDomain.GetAssemblies()
+                        .Select(a => a.GetType("UnityEngine.UIElements.PanelTextSettings") ?? a.GetType("UnityEngine.UIElements.TextSettings"))
+                        .FirstOrDefault(t => t != null);
                 if (textSettingsType == null)
                 {
                     AddReportWarning(report, "Unity Panel Text Settings asset не создан: тип UnityEngine.UIElements.TextSettings не найден в этой версии Unity.");
@@ -793,6 +800,13 @@ namespace MTK.FigmaUIImport
                 AiFuiImporterUtility.EnsureAssetFolder(folder);
                 var assetPath = AiFuiImporterUtility.CombineAssetPath(folder, AiFuiImporterUtility.SanitizeFileName(projectName + "_TextSettings", "FUI_TextSettings") + ".asset");
                 var existing = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(assetPath);
+                if (existing != null && !textSettingsType.IsInstanceOfType(existing))
+                {
+                    // A previous importer build could create the legacy TextSettings type here.
+                    // PanelSettings.textSettings then stayed unassigned and <gradient> tags were printed literally.
+                    AssetDatabase.DeleteAsset(assetPath);
+                    existing = null;
+                }
                 var textSettings = existing != null ? existing : ScriptableObject.CreateInstance(textSettingsType);
                 if (textSettings == null) return null;
 
@@ -940,14 +954,16 @@ namespace MTK.FigmaUIImport
             }
             if (textSettings != null)
             {
-                TrySetMemberObject(panelSettings, "textSettings", textSettings);
-                TrySetMemberObject(panelSettings, "panelTextSettings", textSettings);
+                var textSettingsAssigned = TrySetMemberObject(panelSettings, "textSettings", textSettings);
+                textSettingsAssigned |= TrySetMemberObject(panelSettings, "panelTextSettings", textSettings);
                 var soText = new SerializedObject(panelSettings);
-                TrySetSerializedObjectReference(soText, "m_TextSettings", textSettings);
-                TrySetSerializedObjectReference(soText, "m_PanelTextSettings", textSettings);
-                TrySetSerializedObjectReference(soText, "textSettings", textSettings);
-                TrySetSerializedObjectReference(soText, "panelTextSettings", textSettings);
+                textSettingsAssigned |= TrySetSerializedObjectReference(soText, "m_TextSettings", textSettings);
+                textSettingsAssigned |= TrySetSerializedObjectReference(soText, "m_PanelTextSettings", textSettings);
+                textSettingsAssigned |= TrySetSerializedObjectReference(soText, "textSettings", textSettings);
+                textSettingsAssigned |= TrySetSerializedObjectReference(soText, "panelTextSettings", textSettings);
                 soText.ApplyModifiedPropertiesWithoutUndo();
+                if (!textSettingsAssigned)
+                    AddReportWarning(report, "Panel Text Settings asset создан, но не удалось назначить его в Panel Settings. Rich-text gradients не будут работать.");
             }
             EditorUtility.SetDirty(panelSettings);
             AssetDatabase.SaveAssets();
@@ -1883,6 +1899,7 @@ namespace MTK.FigmaUIImport
         private readonly StringBuilder _uss = new StringBuilder();
         private int _elementSeq;
         private readonly Dictionary<string, int> _classNameCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, int> _gradientPresetNameCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         private string _screenClass;
         private double _screenWidth;
         private double _screenHeight;
@@ -1942,7 +1959,21 @@ namespace MTK.FigmaUIImport
             _uss.AppendLine(".fui_type_label {");
             _uss.AppendLine("  white-space: nowrap;");
             _uss.AppendLine("  overflow: visible;");
-            _uss.AppendLine("  flex-shrink: 0;");
+            _uss.AppendLine("  min-width: 0;");
+            _uss.AppendLine("  min-height: 0;");
+            _uss.AppendLine("  padding-left: 0;");
+            _uss.AppendLine("  padding-right: 0;");
+            _uss.AppendLine("  padding-top: 0;");
+            _uss.AppendLine("  padding-bottom: 0;");
+            _uss.AppendLine("  margin-left: 0;");
+            _uss.AppendLine("  margin-right: 0;");
+            _uss.AppendLine("  margin-top: 0;");
+            _uss.AppendLine("  margin-bottom: 0;");
+            _uss.AppendLine("  border-left-width: 0;");
+            _uss.AppendLine("  border-right-width: 0;");
+            _uss.AppendLine("  border-top-width: 0;");
+            _uss.AppendLine("  border-bottom-width: 0;");
+            _uss.AppendLine("  background-color: rgba(0, 0, 0, 0);");
             _uss.AppendLine("}");
             _uss.AppendLine();
             _uss.AppendLine(".fui_button {");
@@ -2053,17 +2084,16 @@ namespace MTK.FigmaUIImport
             }
 
             var text = CleanImportedText(!string.IsNullOrWhiteSpace(ownText) ? ownText : FindVisibleText(element));
-            var hasTextGradient = FuiJson.GetObject(style, "textGradient") != null;
             var editableText = BuildEditableLabelText(text, style, name);
             if (type == "Label" && !textAsImage)
             {
                 attrs.Append(" text=\"").Append(XmlEscape(editableText)).Append("\"");
-                if (hasTextGradient) attrs.Append(" enable-rich-text=\"true\"");
+                attrs.Append(" enable-rich-text=\"true\"");
             }
             else if (type == "Button" && (childList == null || childList.Count == 0) && !string.IsNullOrEmpty(text))
             {
                 attrs.Append(" text=\"").Append(XmlEscape(editableText)).Append("\"");
-                if (hasTextGradient) attrs.Append(" enable-rich-text=\"true\"");
+                attrs.Append(" enable-rich-text=\"true\"");
             }
             else if (type == "Input" || type == "Входные данные")
             {
@@ -2143,6 +2173,7 @@ namespace MTK.FigmaUIImport
             var anchor = FuiJson.GetObject(element, "anchor");
             var style = FuiJson.GetObject(element, "style");
             var assetRef = FuiElementRenderRules.ShouldSuppressOwnAssetRef(element) ? null : FuiJson.GetObject(element, "assetRef");
+            if (IsEditableTextElement(element, type)) bounds = ResolveEditableTextBounds(bounds, style);
             var width = FuiJson.GetDouble(bounds, "width", 0);
             var height = FuiJson.GetDouble(bounds, "height", 0);
             var useAbsolute = ShouldUseAbsoluteLayout(element, isRoot, parentLayoutMode);
@@ -2175,7 +2206,7 @@ namespace MTK.FigmaUIImport
 
             AppendLayout(layout);
             AppendVisualStyle(style);
-            if (IsEditableTextType(type))
+            if (IsEditableTextElement(element, type))
             {
                 // Text must remain on one line. Best Fit then adapts the font size instead of
                 // moving words to a second line when the available width changes.
@@ -2282,7 +2313,7 @@ namespace MTK.FigmaUIImport
             {
                 _uss.AppendLine("  flex-grow: 0;");
                 _uss.AppendLine("  flex-shrink: 0;");
-                if (type == "Image" || HasAssetRef(element)) AppendPx(mainProperty, mainValue);
+                if (type == "Image" || HasAssetRef(element) || IsEditableTextElement(element, type)) AppendPx(mainProperty, mainValue);
             }
             else
             {
@@ -2298,7 +2329,7 @@ namespace MTK.FigmaUIImport
             }
             else if (crossSizing == "Hug")
             {
-                if (type == "Image" || HasAssetRef(element)) AppendPx(crossProperty, crossValue);
+                if (type == "Image" || HasAssetRef(element) || IsEditableTextElement(element, type)) AppendPx(crossProperty, crossValue);
             }
             else
             {
@@ -2410,6 +2441,22 @@ namespace MTK.FigmaUIImport
             var parentHeight = FuiJson.GetDouble(parentBounds, "height", 0);
             var computedRight = parentWidth > 0 ? Math.Max(0, parentWidth - localX - width) : 0;
             var computedBottom = parentHeight > 0 ? Math.Max(0, parentHeight - localY - height) : 0;
+
+            // Text uses its measured Figma rectangle directly. Center anchors in USS require
+            // left/top: 50% plus negative half-size margins; those margins are hard to edit and
+            // can make Best Fit measure the wrong box. Exact text bounds stay stable under the
+            // PanelSettings screen scale and keep all margins at zero.
+            if (IsEditableTextElement(element, type))
+            {
+                AppendPx("left", localX);
+                AppendPx("top", localY);
+                AppendPx("width", Math.Max(0, width));
+                AppendPx("height", Math.Max(0, height));
+                _uss.AppendLine("  min-width: 0;");
+                _uss.AppendLine("  min-height: 0;");
+                _uss.AppendLine("  overflow: visible;");
+                return;
+            }
 
             if (ShouldClampToParentBackground(anchor, bounds, parentBounds))
             {
@@ -2686,10 +2733,54 @@ namespace MTK.FigmaUIImport
             }
         }
 
-        private static bool IsEditableTextType(string type)
+        private static Dictionary<string, object> ResolveEditableTextBounds(Dictionary<string, object> bounds, Dictionary<string, object> style)
         {
-            return string.Equals(type, "Label", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(type, "Button", StringComparison.OrdinalIgnoreCase);
+            var resolved = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            if (bounds != null)
+            {
+                foreach (var pair in bounds) resolved[pair.Key] = pair.Value;
+            }
+
+            var x = FuiJson.GetDouble(bounds, "x", 0);
+            var y = FuiJson.GetDouble(bounds, "y", 0);
+            var width = Math.Max(0, FuiJson.GetDouble(bounds, "width", 0));
+            var height = Math.Max(0, FuiJson.GetDouble(bounds, "height", 0));
+
+            // Existing .fui files carry absoluteRenderBounds in style.renderBounds.
+            // Only its measured size is used here because its x/y values are page-absolute,
+            // while element bounds are screen-local.
+            var renderBounds = FuiJson.GetObject(style, "renderBounds");
+            var renderedWidth = Math.Max(0, FuiJson.GetDouble(renderBounds, "width", 0));
+            var renderedHeight = Math.Max(0, FuiJson.GetDouble(renderBounds, "height", 0));
+            var fontSize = Math.Max(0, FuiJson.GetDouble(style, "fontSize", 0));
+            var lineHeight = ResolveLineHeightPx(FuiJson.GetObject(style, "lineHeight"), fontSize);
+
+            var targetWidth = Math.Max(width, renderedWidth);
+            var targetHeight = Math.Max(height, Math.Max(renderedHeight, Math.Max(lineHeight, fontSize > 0 ? fontSize * 1.2 : 0)));
+            var extraWidth = Math.Max(0, targetWidth - width);
+            var extraHeight = Math.Max(0, targetHeight - height);
+
+            var horizontal = FuiJson.GetString(style, "textAlign", string.Empty).ToLowerInvariant();
+            if (horizontal == "center" || horizontal == "middle") x -= extraWidth * 0.5;
+            else if (horizontal == "right" || horizontal == "end") x -= extraWidth;
+
+            var vertical = FuiJson.GetString(style, "verticalAlign", string.Empty).ToLowerInvariant();
+            if (vertical == "center" || vertical == "middle") y -= extraHeight * 0.5;
+            else if (vertical == "bottom" || vertical == "end") y -= extraHeight;
+
+            resolved["x"] = x;
+            resolved["y"] = y;
+            resolved["width"] = targetWidth;
+            resolved["height"] = targetHeight;
+            return resolved;
+        }
+
+        private static bool IsEditableTextElement(Dictionary<string, object> element, string type)
+        {
+            if (string.Equals(type, "Label", StringComparison.OrdinalIgnoreCase)) return true;
+            if (!string.Equals(type, "Button", StringComparison.OrdinalIgnoreCase)) return false;
+            var children = FuiJson.GetArray(element, "children");
+            return children == null || children.Count == 0;
         }
 
         private void AppendAdaptiveTextAutoSize(Dictionary<string, object> style)
@@ -2706,9 +2797,9 @@ namespace MTK.FigmaUIImport
 
             var designSize = fontSize.HasValue && fontSize.Value > 0 ? fontSize.Value : 0;
             if (!maxSize.HasValue) maxSize = designSize > 0 ? designSize : 100.0;
-            if (!minSize.HasValue) minSize = designSize > 0 ? Math.Max(5.0, designSize * 0.5) : 5.0;
+            if (!minSize.HasValue) minSize = 10.0;
 
-            var resolvedMin = Math.Max(1.0, minSize.Value);
+            var resolvedMin = Math.Max(10.0, minSize.Value);
             var resolvedMax = Math.Max(resolvedMin, maxSize.Value);
             _uss.AppendLine("  -unity-text-auto-size: best-fit " + Num(resolvedMin) + "px " + Num(resolvedMax) + "px;");
         }
@@ -2831,12 +2922,21 @@ namespace MTK.FigmaUIImport
                 if (gradient == null || string.IsNullOrEmpty(_textGradientFolderPath)) return string.Empty;
                 AiFuiImporterUtility.EnsureAssetFolder(_textGradientFolderPath);
 
-                // The preset name is part of the rich text tag. Do not reuse a plain element name only:
-                // different screens often have labels named Title/Button, and a later import can overwrite
-                // the first gradient asset, making older texts lose or change their gradient.
-                var safeName = AiFuiImporterUtility.SanitizeFileName(
-                    "fui_gradient_" + elementName + "_" + ShortStableHash(FuiJson.Serialize(gradient)),
+                // Keep the rich-text reference readable and stable. The screen token prevents
+                // common names such as Title/Button from colliding across screens; a short numeric
+                // suffix is added only when the same name is repeated inside one screen.
+                var screenToken = (_screenClass ?? string.Empty).StartsWith("fui_screen_", StringComparison.OrdinalIgnoreCase)
+                    ? _screenClass.Substring("fui_screen_".Length)
+                    : (_screenClass ?? "screen");
+                var baseName = AiFuiImporterUtility.SanitizeFileName(
+                    "fui_gradient_" + screenToken + "_" + elementName,
                     "fui_gradient");
+                int nameCount;
+                _gradientPresetNameCounts.TryGetValue(baseName, out nameCount);
+                _gradientPresetNameCounts[baseName] = nameCount + 1;
+                var safeName = nameCount == 0
+                    ? baseName
+                    : baseName + "_" + (nameCount + 1).ToString("0000", CultureInfo.InvariantCulture);
                 var assetPath = AiFuiImporterUtility.CombineAssetPath(_textGradientFolderPath, safeName + ".asset");
                 var gradientType = Type.GetType("UnityEngine.TextCore.Text.TextColorGradient, UnityEngine.TextCoreTextEngineModule")
                     ?? Type.GetType("UnityEngine.TextCore.Text.TextColorGradient, UnityEngine.TextCoreFontEngineModule")
@@ -2853,6 +2953,7 @@ namespace MTK.FigmaUIImport
                 else EditorUtility.SetDirty(obj);
                 AssetDatabase.SaveAssets();
                 AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
                 return obj.name;
             }
             catch (Exception ex)
@@ -2991,20 +3092,6 @@ namespace MTK.FigmaUIImport
             }
         }
 
-        private static string ShortStableHash(string value)
-        {
-            unchecked
-            {
-                uint hash = 2166136261u;
-                var text = value ?? string.Empty;
-                for (var i = 0; i < text.Length; i++)
-                {
-                    hash ^= text[i];
-                    hash *= 16777619u;
-                }
-                return hash.ToString("x8", CultureInfo.InvariantCulture);
-            }
-        }
 
         private static void TrySetSerializedEnum(SerializedObject so, string propertyName, int value)
         {
