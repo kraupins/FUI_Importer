@@ -245,8 +245,8 @@ namespace MTK.FigmaUIImport
     {
         private const string CanonicalResourcesRootPath = "Assets/Resources";
         private const string CanonicalTextGradientPresetFolderPath = "Assets/Resources/Color Gradient Presets";
-        private const string CanonicalTextGradientPresetPanelPath = "Assets/Resources/Color Gradient Presets";
-        private const string CanonicalTextGradientPresetResourcesPath = "Color Gradient Presets";
+        private const string CanonicalTextGradientPresetResourcesPath = "Color Gradient Presets/";
+        private const string CanonicalTextGradientPresetPanelPath = CanonicalTextGradientPresetResourcesPath;
 
         public static List<FuiImportedProjectInfo> FindImportedProjects(string rootAssetPath)
         {
@@ -799,7 +799,7 @@ namespace MTK.FigmaUIImport
                 var so = new SerializedObject(textSettings);
                 // Unity resolves <gradient="name"> through Panel Text Settings and Resources.Load.
                 // Gradient preset assets must live in Assets/Resources/Color Gradient Presets,
-                // and the Panel Text Settings asset must point to that exact folder.
+                // and Panel Text Settings must use the Resources-relative path: Color Gradient Presets/.
                 var resourcesFolder = GetGlobalResourcesRootPath();
                 AiFuiImporterUtility.EnsureAssetFolder(resourcesFolder);
                 AiFuiImporterUtility.EnsureAssetFolder(GetTextGradientPresetFolderPath());
@@ -810,7 +810,7 @@ namespace MTK.FigmaUIImport
 
                 // Unity 6.5 resolves rich-text <gradient="..."> presets through this PanelTextSettings path.
                 // In the Inspector this is the Color Gradient Presets > Path field. Keep it as the
-                // canonical project asset path so it points exactly at Assets/Resources/Color Gradient Presets.
+                // Resources-relative path only. Do not include Assets/Resources in this Inspector field.
                 var colorGradientPresetPath = CanonicalTextGradientPresetPanelPath;
                 var fontAssetPath = "Fonts & Materials";
                 var spriteAssetPath = "Sprite Assets";
@@ -929,7 +929,7 @@ namespace MTK.FigmaUIImport
             var reference = GetReferenceResolution(screens);
             panelSettings.scaleMode = PanelScaleMode.ScaleWithScreenSize;
             panelSettings.referenceResolution = reference;
-            panelSettings.screenMatchMode = PanelScreenMatchMode.MatchWidthOrHeight;
+            panelSettings.screenMatchMode = PanelScreenMatchMode.Expand;
             panelSettings.match = 0.5f;
             if (runtimeTheme != null)
             {
@@ -1940,7 +1940,7 @@ namespace MTK.FigmaUIImport
             _uss.AppendLine("}");
             _uss.AppendLine();
             _uss.AppendLine(".fui_type_label {");
-            _uss.AppendLine("  white-space: normal;");
+            _uss.AppendLine("  white-space: nowrap;");
             _uss.AppendLine("  overflow: visible;");
             _uss.AppendLine("  flex-shrink: 0;");
             _uss.AppendLine("}");
@@ -2175,12 +2175,15 @@ namespace MTK.FigmaUIImport
 
             AppendLayout(layout);
             AppendVisualStyle(style);
-            if (type == "Label")
+            if (IsEditableTextType(type))
             {
+                // Text must remain on one line. Best Fit then adapts the font size instead of
+                // moving words to a second line when the available width changes.
                 _uss.AppendLine("  overflow: visible;");
-                _uss.AppendLine("  white-space: normal;");
+                _uss.AppendLine("  white-space: nowrap;");
                 _uss.AppendLine("  -unity-text-generator: advanced;");
                 _uss.AppendLine("  -unity-text-overflow-position: end;");
+                AppendAdaptiveTextAutoSize(style);
             }
             if (type != "Image" || !IsTextRasterized(element)) AppendTextStyle(style);
             AppendAssetBackground(assetRef);
@@ -2681,6 +2684,46 @@ namespace MTK.FigmaUIImport
                 AppendPx("border-top-width", borderWidth.Value);
                 AppendPx("border-bottom-width", borderWidth.Value);
             }
+        }
+
+        private static bool IsEditableTextType(string type)
+        {
+            return string.Equals(type, "Label", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(type, "Button", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void AppendAdaptiveTextAutoSize(Dictionary<string, object> style)
+        {
+            var fontSize = style != null ? FuiJson.GetNullableDouble(style, "fontSize") : null;
+            var autoSize = style != null
+                ? (FuiJson.GetObject(style, "autoSize") ?? FuiJson.GetObject(style, "textAutoSize"))
+                : null;
+
+            var minSize = GetFirstPositiveNumber(style, autoSize,
+                "minFontSize", "fontSizeMin", "textMinSize", "minSize");
+            var maxSize = GetFirstPositiveNumber(style, autoSize,
+                "maxFontSize", "fontSizeMax", "textMaxSize", "maxSize");
+
+            var designSize = fontSize.HasValue && fontSize.Value > 0 ? fontSize.Value : 0;
+            if (!maxSize.HasValue) maxSize = designSize > 0 ? designSize : 100.0;
+            if (!minSize.HasValue) minSize = designSize > 0 ? Math.Max(5.0, designSize * 0.5) : 5.0;
+
+            var resolvedMin = Math.Max(1.0, minSize.Value);
+            var resolvedMax = Math.Max(resolvedMin, maxSize.Value);
+            _uss.AppendLine("  -unity-text-auto-size: best-fit " + Num(resolvedMin) + "px " + Num(resolvedMax) + "px;");
+        }
+
+        private static double? GetFirstPositiveNumber(Dictionary<string, object> primary, Dictionary<string, object> secondary, params string[] keys)
+        {
+            if (keys == null) return null;
+            foreach (var key in keys)
+            {
+                var value = primary != null ? FuiJson.GetNullableDouble(primary, key) : null;
+                if (value.HasValue && value.Value > 0) return value.Value;
+                value = secondary != null ? FuiJson.GetNullableDouble(secondary, key) : null;
+                if (value.HasValue && value.Value > 0) return value.Value;
+            }
+            return null;
         }
 
         private void AppendTextStyle(Dictionary<string, object> style)
